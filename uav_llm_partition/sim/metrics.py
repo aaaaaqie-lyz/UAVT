@@ -26,6 +26,10 @@ class IntervalMetrics:
     comp_loads: List[float]
     mem_used: List[float]
     comp_used: List[float]
+    comp_delay_by_dev: List[float]
+    comm_delay_by_dev: List[float]
+    mig_delay_by_dev: List[float]
+    total_delay_by_dev: List[float]
     loads: List[float]
     queues: List[float]
     weights: List[float]
@@ -56,5 +60,13 @@ class MetricsLogger:
             "max_queue": max(max(m.queues) for m in self.history),
             "avg_rho_w": sum(m.rho_w for m in self.history) / len(self.history),
             "avg_rho_q": sum(m.rho_q for m in self.history) / len(self.history),
+            "avg_comp_delay_per_dev": sum(sum(m.comp_delay_by_dev) / len(m.comp_delay_by_dev) for m in self.history)
+            / len(self.history),
+            "avg_comm_delay_per_dev": sum(sum(m.comm_delay_by_dev) / len(m.comm_delay_by_dev) for m in self.history)
+            / len(self.history),
+            "avg_mig_delay_per_dev": sum(sum(m.mig_delay_by_dev) / len(m.mig_delay_by_dev) for m in self.history)
+            / len(self.history),
+            "avg_total_delay_per_dev": sum(sum(m.total_delay_by_dev) / len(m.total_delay_by_dev) for m in self.history)
+            / len(self.history),
         }
 

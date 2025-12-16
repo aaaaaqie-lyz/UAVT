@@ -20,7 +20,7 @@ def _distance_matrix(positions: List[List[float]]) -> List[List[float]]:
 
 
 class ChannelModel:
-    def __init__(self, base_rate: float = 5e3, los_decay: float = 120.0, outage_distance: float = 220.0) -> None:
+    def __init__(self, base_rate: float = 0.5, los_decay: float = 120.0, outage_distance: float = 220.0) -> None:
         self.base_rate = base_rate
         self.los_decay = los_decay
         self.outage_distance = outage_distance

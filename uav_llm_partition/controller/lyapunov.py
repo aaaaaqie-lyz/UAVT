@@ -5,7 +5,7 @@ from typing import List
 
 
 class LyapunovQueue:
-    def __init__(self, num_uav: int, theta: float = 0.7) -> None:
+    def __init__(self, num_uav: int, theta: float = 0.3) -> None:
         self.theta = theta
         self.queue = [0.0 for _ in range(num_uav)]
 

@@ -12,10 +12,10 @@ class SchedulerHeuristic:
 
     def __init__(
         self,
-        comm_budget: float = 1.0,
+        comm_budget: float = 0.01,
         lyapunov_penalty: float = 0.5,
         weight_scale: float = 0.5,
-        mig_overhead: float = 0.5,
+        mig_overhead: float = 0.01,
         mig_penalty_scale: float = 1.0,
         migration_budget: int = 3,
     ) -> None:
@@ -60,8 +60,7 @@ class SchedulerHeuristic:
         return comp_ratio, mem_ratio, comm_ratio
 
     def _score(self, base_score: float, lyapunov: float) -> float:
-        lyap_factor = 1.0 + max(lyapunov, 0.0) * self.lyapunov_penalty
-        return base_score * lyap_factor
+        return base_score + max(lyapunov, 0.0) * self.lyapunov_penalty
 
     def _migration_penalty(
         self,

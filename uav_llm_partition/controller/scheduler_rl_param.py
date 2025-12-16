@@ -25,9 +25,9 @@ class RLSchedulerParam:
             avg_reward = sum(self.rewards[-self.params.window :]) / self.params.window
         else:
             avg_reward = reward
-        delta = 0.01 if avg_reward > 0 else -0.01
-        self.params.rho_w = max(0.0, min(1.5, self.params.rho_w + delta))
-        self.params.rho_q = max(0.0, min(2.0, self.params.rho_q + delta / 2))
+        step = max(min(avg_reward / 10.0, 0.05), -0.05)
+        self.params.rho_w = max(0.0, min(2.0, self.params.rho_w + step))
+        self.params.rho_q = max(0.0, min(3.0, self.params.rho_q + step / 2))
         return self.params
 
     def get(self) -> SchedulerParams:
