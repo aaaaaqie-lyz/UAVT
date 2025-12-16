@@ -5,7 +5,8 @@ This repository provides a minimal simulation of head-level Transformer partitio
 ## Features
 - **Interval loop:** Updates mobility, channel bandwidth, resources, block demands, scheduling, migrations, delay decomposition, and Lyapunov queues each interval.
 - **Head + KV cache constraint:** Heads carry their KV cache when migrating; migration cost uses KV size.
-- **Heuristic scheduler with repair:** Uses dynamic weights and Lyapunov pressure to assign blocks while repairing overloads.
+- **Heuristic scheduler with repair:** Uses DTIS-style compute/memory/communication ratio scoring (feasible iff max ratio ≤ 1),
+  Lyapunov pressure penalties, and conservative migration throttling when moving KV-carrying heads.
 - **Metrics:** Tracks max load, Jain fairness, delay breakdown (compute/comm/migration), and migration statistics.
 
 ## Layout

@@ -30,7 +30,7 @@ class Simulator:
         self.intervals = intervals
         self.mobility = MobilityModel(num_uav=num_uav)
         self.channel = ChannelModel()
-        self.resource = ResourceModel(base_compute=8e3, base_memory=2e4)
+        self.resource = ResourceModel(base_compute=1e9, base_memory=32.0)
         self.weights = WeightManager()
         self.demand_model = DemandModel(num_layers=num_layers, num_heads=num_heads, hidden_size=hidden_size, head_dim=head_dim)
         self.scheduler = SchedulerHeuristic()
@@ -38,9 +38,6 @@ class Simulator:
         self.metrics = MetricsLogger()
         self.blocks = self.demand_model.blocks()
         self.dependencies = build_dependencies(self.blocks, num_heads=num_heads)
-        self.activation_sizes = {
-            (u, v): self.demand_model.activation_size(u, v) for u, v in self.dependencies
-        }
         self.prev_assignment: Dict[Block, int] = {}
 
     def run(self) -> MetricsLogger:
@@ -55,6 +52,7 @@ class Simulator:
             bandwidth, conn, los_score = self.channel.compute(positions)
             compute, memory = self.resource.sample(self.num_uav)
             demands = self.demand_model.update_interval()
+            activation_sizes = {(u, v): self.demand_model.activation_size(u, v) for u, v in self.dependencies}
             weights = self.weights.compute(compute, memory, los_score, mobility_risk)
             assignment, migrations, failed = self.scheduler.assign(
                 self.blocks,
@@ -65,7 +63,7 @@ class Simulator:
                 lyapunov=self.lyapunov.pressure(),
                 prev_assignment=self.prev_assignment,
                 dependencies=self.dependencies,
-                activation_sizes=self.activation_sizes,
+                activation_sizes=activation_sizes,
                 bandwidth=bandwidth,
             )
             delay_comp, comp_load = self._compute_delay(assignment, demands, compute)
@@ -134,7 +132,7 @@ class Simulator:
         delay = 0.0
         volume = 0.0
         for blk, src, dst in migrations:
-            kv = demands[blk].kv_cache + demands[blk].memory
+            kv = demands[blk].kv_cache
             volume += kv
             rate = bandwidth[src][dst] + 1e-6
             delay += kv / rate + 1.0
