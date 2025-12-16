@@ -26,6 +26,11 @@ class IntervalMetrics:
     comp_loads: List[float]
     mem_used: List[float]
     comp_used: List[float]
+    loads: List[float]
+    queues: List[float]
+    weights: List[float]
+    rho_w: float
+    rho_q: float
 
 
 @dataclass
@@ -47,5 +52,9 @@ class MetricsLogger:
             "failure_rate": sum(1 if m.failure else 0 for m in self.history) / len(self.history),
             "avg_mem_load": sum(sum(m.mem_loads) / len(m.mem_loads) for m in self.history) / len(self.history),
             "avg_comp_load": sum(sum(m.comp_loads) / len(m.comp_loads) for m in self.history) / len(self.history),
+            "avg_queue": sum(sum(m.queues) / len(m.queues) for m in self.history) / len(self.history),
+            "max_queue": max(max(m.queues) for m in self.history),
+            "avg_rho_w": sum(m.rho_w for m in self.history) / len(self.history),
+            "avg_rho_q": sum(m.rho_q for m in self.history) / len(self.history),
         }
 

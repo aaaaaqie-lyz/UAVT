@@ -14,12 +14,14 @@ class SchedulerHeuristic:
         self,
         comm_budget: float = 1.0,
         lyapunov_penalty: float = 0.5,
+        weight_scale: float = 0.5,
         mig_overhead: float = 0.5,
         mig_penalty_scale: float = 1.0,
         migration_budget: int = 3,
     ) -> None:
         self.comm_budget = comm_budget
         self.lyapunov_penalty = lyapunov_penalty
+        self.weight_scale = weight_scale
         self.mig_overhead = mig_overhead
         self.mig_penalty_scale = mig_penalty_scale
         self.migration_budget = migration_budget
@@ -57,14 +59,9 @@ class SchedulerHeuristic:
         comm_ratio = comm_delay / self.comm_budget
         return comp_ratio, mem_ratio, comm_ratio
 
-    def _score(
-        self,
-        base_score: float,
-        lyapunov: float,
-        migration_penalty: float,
-    ) -> float:
+    def _score(self, base_score: float, lyapunov: float) -> float:
         lyap_factor = 1.0 + max(lyapunov, 0.0) * self.lyapunov_penalty
-        return base_score * lyap_factor + migration_penalty
+        return base_score * lyap_factor
 
     def _migration_penalty(
         self,
@@ -97,7 +94,6 @@ class SchedulerHeuristic:
         activation_sizes: Dict[Tuple[Block, Block], float],
         bandwidth: List[List[float]],
     ) -> Tuple[Dict[Block, int], List[Tuple[Block, int, int]], bool]:
-        del weights  # weights are unused in the DTIS-style scoring
         assignment: Dict[Block, int] = {}
         migrations: List[Tuple[Block, int, int]] = []
         comp_used = [0.0 for _ in compute]
@@ -127,10 +123,17 @@ class SchedulerHeuristic:
                 mig_penalty, will_migrate = self._migration_penalty(
                     blk, demand, dev, prev_assignment, bandwidth, len(migrations)
                 )
-                comm_ratio_with_mig = (comm_ratio * self.comm_budget + mig_penalty) / self.comm_budget
-                base_score = max(comp_ratio, mem_ratio, comm_ratio_with_mig)
+                comm_time = comm_ratio * self.comm_budget + mig_penalty
+                comm_ratio_with_mig = comm_time / self.comm_budget
+
+                weight_factor = 1.0 + self.weight_scale * weights[dev]
+                comp_ratio_adj = comp_ratio / weight_factor
+                mem_ratio_adj = mem_ratio / weight_factor
+                comm_ratio_adj = comm_ratio_with_mig / weight_factor
+
+                base_score = max(comp_ratio_adj, mem_ratio_adj, comm_ratio_adj)
                 feasible = base_score <= 1.0 and (not will_migrate or len(migrations) < self.migration_budget)
-                final_score = self._score(base_score, lyapunov[dev], 0.0)
+                final_score = self._score(base_score, lyapunov[dev])
                 candidate_scores.append((dev, final_score, base_score, feasible, will_migrate))
 
             feasible_candidates = [c for c in candidate_scores if c[3]]

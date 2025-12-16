@@ -5,12 +5,13 @@ from typing import Dict, List, Tuple
 
 from uav_llm_partition.controller.lyapunov import LyapunovQueue
 from uav_llm_partition.controller.scheduler_heuristic import SchedulerHeuristic
+from uav_llm_partition.controller.scheduler_rl_param import RLSchedulerParam
 from uav_llm_partition.controller.weight_manager import WeightManager
 from uav_llm_partition.env.channel_model import ChannelModel
 from uav_llm_partition.env.resource_model import ResourceModel
 from uav_llm_partition.env.uav_mobility import MobilityModel
 from uav_llm_partition.model_partition.blocks import Block
-from uav_llm_partition.model_partition.demand_model import DemandModel, BlockDemand
+from uav_llm_partition.model_partition.demand_model import BlockDemand, DemandModel
 from uav_llm_partition.model_partition.graph_builder import build_dependencies
 from uav_llm_partition.sim.metrics import IntervalMetrics, MetricsLogger, jain_fairness
 from uav_llm_partition.sim.logger import logger
@@ -35,10 +36,12 @@ class Simulator:
         self.demand_model = DemandModel(num_layers=num_layers, num_heads=num_heads, hidden_size=hidden_size, head_dim=head_dim)
         self.scheduler = SchedulerHeuristic()
         self.lyapunov = LyapunovQueue(num_uav=num_uav)
+        self.rl_param = RLSchedulerParam()
         self.metrics = MetricsLogger()
         self.blocks = self.demand_model.blocks()
         self.dependencies = build_dependencies(self.blocks, num_heads=num_heads)
         self.prev_assignment: Dict[Block, int] = {}
+        self._reward_buffer: List[float] = []
 
     def run(self) -> MetricsLogger:
         positions, mobility_risk = self.mobility.update()
@@ -46,6 +49,9 @@ class Simulator:
         compute, memory = self.resource.sample(self.num_uav)
         weights = self.weights.compute(compute, memory, los_score, mobility_risk)
         lyapunov = self.lyapunov.pressure()
+        rl_params = self.rl_param.get()
+        self.scheduler.weight_scale = rl_params.rho_w
+        self.scheduler.lyapunov_penalty = rl_params.rho_q
 
         for t in range(self.intervals):
             positions, mobility_risk = self.mobility.update()
@@ -70,12 +76,25 @@ class Simulator:
             delay_comm = self._communication_delay(assignment, bandwidth, activation_sizes)
             delay_mig, mig_volume = self._migration_delay(migrations, bandwidth, demands)
             total_delay = delay_comp + delay_comm + delay_mig
-            loads, mem_ratio, comp_ratio, mem_used, comp_used = self._load_vector(
-                assignment, demands, compute, memory
-            )
+            loads, mem_ratio, comp_ratio, mem_used, comp_used = self._load_vector(assignment, demands, compute, memory)
             max_load = max(loads)
             fairness = jain_fairness(loads)
             lyapunov = self.lyapunov.update(loads)
+
+            rl_reward = -(
+                total_delay
+                + max_load
+                + (5.0 if failed else 0.0)
+                + (0.1 * len(migrations))
+                + (0.05 * mig_volume)
+            )
+            self._reward_buffer.append(rl_reward)
+            if (t + 1) % rl_params.window == 0:
+                window_reward = sum(self._reward_buffer[-rl_params.window :]) / rl_params.window
+                rl_params = self.rl_param.update_from_reward(window_reward)
+                self.scheduler.weight_scale = rl_params.rho_w
+                self.scheduler.lyapunov_penalty = rl_params.rho_q
+
             metrics = IntervalMetrics(
                 max_load=max_load,
                 fairness=fairness,
@@ -90,11 +109,16 @@ class Simulator:
                 comp_loads=comp_ratio,
                 mem_used=mem_used,
                 comp_used=comp_used,
+                loads=loads,
+                queues=lyapunov,
+                weights=weights,
+                rho_w=self.scheduler.weight_scale,
+                rho_q=self.scheduler.lyapunov_penalty,
             )
             self.metrics.log(metrics)
             self.prev_assignment = assignment
             logger.info(
-                "[t=%d] max_load=%.3f fairness=%.3f delay=%.3f comp=%.3f comm=%.3f mig=%.3f migs=%d failure=%s mem=%s comp=%s",
+                "[t=%d] max_load=%.3f fairness=%.3f delay=%.3f comp=%.3f comm=%.3f mig=%.3f migs=%d failure=%s mem=%s comp=%s queue=%s rho_w=%.2f rho_q=%.2f",
                 t,
                 max_load,
                 fairness,
@@ -106,6 +130,9 @@ class Simulator:
                 failed,
                 [round(v, 3) for v in mem_ratio],
                 [round(v, 3) for v in comp_ratio],
+                [round(q, 3) for q in lyapunov],
+                self.scheduler.weight_scale,
+                self.scheduler.lyapunov_penalty,
             )
         return self.metrics
 
@@ -162,4 +189,3 @@ class Simulator:
         mem_ratio = [m / (cap + 1e-6) for m, cap in zip(mem_load, memory)]
         comp_ratio = [c / (cap + 1e-6) for c, cap in zip(comp_load, compute)]
         return [max(mr, cr) for mr, cr in zip(mem_ratio, comp_ratio)], mem_ratio, comp_ratio, mem_load, comp_load
-

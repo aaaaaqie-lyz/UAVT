@@ -18,8 +18,8 @@ class WeightManager:
         m_norm = normalize(memory)
         los_norm = normalize(los_score)
         risk_norm = normalize(mobility_risk)
-        return [
+        raw = [
             self.alpha * c + self.beta * m + self.gamma * l - self.delta * r
             for c, m, l, r in zip(c_norm, m_norm, los_norm, risk_norm)
         ]
-
+        return normalize(raw)

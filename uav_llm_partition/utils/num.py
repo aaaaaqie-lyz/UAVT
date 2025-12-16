@@ -36,9 +36,15 @@ def mean(values: Iterable[float]) -> float:
 
 
 def normalize(values: List[float]) -> List[float]:
-    max_val = max(values) if values else 1.0
-    denom = max_val + 1e-6
-    return [v / denom for v in values]
+    """Min-max normalize to [0, 1]; if all equal, return zeros."""
+    if not values:
+        return []
+    min_val = min(values)
+    max_val = max(values)
+    span = max_val - min_val
+    if span <= 1e-9:
+        return [0.0 for _ in values]
+    return [(v - min_val) / span for v in values]
 
 
 def argmin(values: List[float]) -> int:
