@@ -23,7 +23,7 @@ class Simulator:
         num_layers: int,
         num_heads: int,
         hidden_size: int,
-        head_dim: int,
+        head_dim: int | None,
         intervals: int = 50,
     ) -> None:
         self.num_uav = num_uav
@@ -67,10 +67,12 @@ class Simulator:
                 bandwidth=bandwidth,
             )
             delay_comp, comp_load = self._compute_delay(assignment, demands, compute)
-            delay_comm = self._communication_delay(assignment, bandwidth)
+            delay_comm = self._communication_delay(assignment, bandwidth, activation_sizes)
             delay_mig, mig_volume = self._migration_delay(migrations, bandwidth, demands)
             total_delay = delay_comp + delay_comm + delay_mig
-            loads = self._load_vector(assignment, demands, compute, memory)
+            loads, mem_ratio, comp_ratio, mem_used, comp_used = self._load_vector(
+                assignment, demands, compute, memory
+            )
             max_load = max(loads)
             fairness = jain_fairness(loads)
             lyapunov = self.lyapunov.update(loads)
@@ -84,11 +86,15 @@ class Simulator:
                 migration_count=len(migrations),
                 migration_volume=mig_volume,
                 failure=failed,
+                mem_loads=mem_ratio,
+                comp_loads=comp_ratio,
+                mem_used=mem_used,
+                comp_used=comp_used,
             )
             self.metrics.log(metrics)
             self.prev_assignment = assignment
             logger.info(
-                "[t=%d] max_load=%.3f fairness=%.3f delay=%.3f comp=%.3f comm=%.3f mig=%.3f migs=%d failure=%s",
+                "[t=%d] max_load=%.3f fairness=%.3f delay=%.3f comp=%.3f comm=%.3f mig=%.3f migs=%d failure=%s mem=%s comp=%s",
                 t,
                 max_load,
                 fairness,
@@ -98,6 +104,8 @@ class Simulator:
                 delay_mig,
                 len(migrations),
                 failed,
+                [round(v, 3) for v in mem_ratio],
+                [round(v, 3) for v in comp_ratio],
             )
         return self.metrics
 
@@ -110,13 +118,18 @@ class Simulator:
         comp_load = [cl / (c + 1e-6) for cl, c in zip(comp_load, compute)]
         return comp_delay, comp_load
 
-    def _communication_delay(self, assignment: Dict[Block, int], bandwidth: List[List[float]]) -> float:
+    def _communication_delay(
+        self,
+        assignment: Dict[Block, int],
+        bandwidth: List[List[float]],
+        activation_sizes: Dict[Tuple[Block, Block], float],
+    ) -> float:
         delay = 0.0
         for upstream, downstream in self.dependencies:
             dev_u = assignment[upstream]
             dev_d = assignment[downstream]
             if dev_u != dev_d:
-                size = self.demand_model.activation_size(upstream, downstream)
+                size = activation_sizes.get((upstream, downstream), activation_sizes.get((downstream, upstream), 0.0))
                 bw = bandwidth[dev_u][dev_d] + 1e-6
                 delay += size / bw
         return delay
@@ -135,12 +148,12 @@ class Simulator:
             kv = demands[blk].kv_cache
             volume += kv
             rate = bandwidth[src][dst] + 1e-6
-            delay += kv / rate + 1.0
+            delay += kv / rate + self.scheduler.mig_overhead
         return delay, volume
 
     def _load_vector(
         self, assignment: Dict[Block, int], demands: Dict[Block, BlockDemand], compute: List[float], memory: List[float]
-    ) -> List[float]:
+    ) -> Tuple[List[float], List[float], List[float], List[float], List[float]]:
         mem_load = [0.0 for _ in range(self.num_uav)]
         comp_load = [0.0 for _ in range(self.num_uav)]
         for blk, dev in assignment.items():
@@ -148,5 +161,5 @@ class Simulator:
             comp_load[dev] += demands[blk].compute
         mem_ratio = [m / (cap + 1e-6) for m, cap in zip(mem_load, memory)]
         comp_ratio = [c / (cap + 1e-6) for c, cap in zip(comp_load, compute)]
-        return [max(mr, cr) for mr, cr in zip(mem_ratio, comp_ratio)]
+        return [max(mr, cr) for mr, cr in zip(mem_ratio, comp_ratio)], mem_ratio, comp_ratio, mem_load, comp_load
 

@@ -108,7 +108,7 @@ class SchedulerHeuristic:
 
         for blk in sorted_blocks:
             demand = demands[blk]
-            candidate_scores: List[Tuple[int, float, float, bool]] = []
+            candidate_scores: List[Tuple[int, float, float, bool, bool]] = []
             for dev in range(len(compute)):
                 comp_ratio, mem_ratio, comm_ratio = self._ratios(
                     blk,
@@ -124,35 +124,30 @@ class SchedulerHeuristic:
                     comp_used,
                     mem_used,
                 )
-                base_score = max(comp_ratio, mem_ratio, comm_ratio)
-                feasible = base_score <= 1.0
                 mig_penalty, will_migrate = self._migration_penalty(
                     blk, demand, dev, prev_assignment, bandwidth, len(migrations)
                 )
-                final_score = self._score(base_score, lyapunov[dev], mig_penalty)
-                candidate_scores.append(
-                    (
-                        dev,
-                        final_score,
-                        base_score,
-                        feasible and (not will_migrate or len(migrations) < self.migration_budget),
-                    )
-                )
+                comm_ratio_with_mig = (comm_ratio * self.comm_budget + mig_penalty) / self.comm_budget
+                base_score = max(comp_ratio, mem_ratio, comm_ratio_with_mig)
+                feasible = base_score <= 1.0 and (not will_migrate or len(migrations) < self.migration_budget)
+                final_score = self._score(base_score, lyapunov[dev], 0.0)
+                candidate_scores.append((dev, final_score, base_score, feasible, will_migrate))
 
             feasible_candidates = [c for c in candidate_scores if c[3]]
             if not feasible_candidates:
                 failed = True
-                dev, best_score, _, _ = min(candidate_scores, key=lambda x: x[1])
+                dev, best_score, _, _, will_migrate = min(candidate_scores, key=lambda x: x[1])
             else:
-                dev, best_score, _, _ = min(feasible_candidates, key=lambda x: x[1])
+                dev, best_score, _, _, will_migrate = min(feasible_candidates, key=lambda x: x[1])
                 if blk in prev_assignment:
                     prev_dev = prev_assignment[blk]
                     prev_base = next((c[2] for c in candidate_scores if c[0] == prev_dev), float("inf"))
                     prev_score = next((c[1] for c in candidate_scores if c[0] == prev_dev), float("inf"))
                     if prev_base <= 1.0 and prev_score <= best_score:
                         dev = prev_dev
+                        will_migrate = False
 
-            if blk in prev_assignment and prev_assignment[blk] != dev and len(migrations) < self.migration_budget:
+            if blk in prev_assignment and prev_assignment[blk] != dev and will_migrate:
                 migrations.append((blk, prev_assignment[blk], dev))
             comp_used[dev] += demand.compute
             mem_used[dev] += demand.memory

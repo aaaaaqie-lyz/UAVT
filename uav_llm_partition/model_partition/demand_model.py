@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from .blocks import Block
 
@@ -23,7 +23,7 @@ class DemandModel:
         num_layers: int,
         num_heads: int,
         hidden_size: int,
-        head_dim: int,
+        head_dim: Optional[int] = None,
         interval_tokens: int = 4,
         precision_bytes: float = 2.0,
         initial_seq_len: int = 32,
@@ -31,7 +31,10 @@ class DemandModel:
         self.num_layers = num_layers
         self.num_heads = num_heads
         self.hidden_size = hidden_size
-        self.head_dim = head_dim
+        computed_head_dim = max(int(hidden_size / max(num_heads, 1)), 1)
+        self.head_dim = computed_head_dim if head_dim is None else head_dim
+        if self.head_dim != computed_head_dim:
+            self.head_dim = computed_head_dim
         self.interval_tokens = interval_tokens
         self.precision_bytes = precision_bytes
         self.seq_len = initial_seq_len
@@ -51,14 +54,16 @@ class DemandModel:
     def blocks(self) -> List[Block]:
         return list(self.demands.keys())
 
-    def _head_memory(self, L_s: int) -> float:
+    def _head_memory(self, L_s: int, L_generated: int) -> float:
         qkv = 3 * L_s * self.head_dim * self.precision_bytes
         weights = 3 * self.hidden_size * self.head_dim * self.precision_bytes
-        kv_cache = max(L_s - self.initial_seq_len, 0) * self.hidden_size * self.precision_bytes
+        kv_cache = max(L_generated, 0) * self.hidden_size * self.precision_bytes
         return (qkv + weights) / GB, kv_cache / GB
 
     def _head_flops(self, L_s: int) -> float:
-        return 3 * L_s * self.hidden_size * self.head_dim + (L_s**2) * self.head_dim
+        flops_qkv = 3 * L_s * self.hidden_size * self.head_dim
+        flops_attn = (L_s**2) * self.head_dim
+        return flops_qkv + flops_attn
 
     def _proj_memory(self, L_s: int) -> float:
         return (L_s * self.hidden_size * self.precision_bytes) / GB
@@ -74,20 +79,22 @@ class DemandModel:
 
     def update_interval(self) -> Dict[Block, BlockDemand]:
         self.seq_len += self.interval_tokens
+        L_s = self.seq_len
+        L_generated = max(L_s - self.initial_seq_len, 0)
         for block, demand in self.demands.items():
             if block.kind == "head":
-                mem_static, kv_cache = self._head_memory(self.seq_len)
+                mem_static, kv_cache = self._head_memory(L_s, L_generated)
                 demand.kv_cache = kv_cache
                 demand.memory = mem_static + kv_cache
-                demand.compute = self._head_flops(self.seq_len)
+                demand.compute = self._head_flops(L_s)
             elif block.kind == "proj":
                 demand.kv_cache = 0.0
-                demand.memory = self._proj_memory(self.seq_len)
-                demand.compute = self._proj_flops(self.seq_len)
+                demand.memory = self._proj_memory(L_s)
+                demand.compute = self._proj_flops(L_s)
             else:  # ffn
                 demand.kv_cache = 0.0
-                demand.memory = self._ffn_memory(self.seq_len)
-                demand.compute = self._ffn_flops(self.seq_len)
+                demand.memory = self._ffn_memory(L_s)
+                demand.compute = self._ffn_flops(L_s)
         return self.demands
 
     def activation_size(self, upstream: Block, downstream: Block) -> float:
