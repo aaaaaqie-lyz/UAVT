@@ -12,12 +12,14 @@ class SchedulerHeuristic:
 
     def __init__(
         self,
-        comm_budget: float = 0.01,
+        comm_budget: float = 0.015,
         lyapunov_penalty: float = 0.5,
         weight_scale: float = 0.5,
         mig_overhead: float = 0.01,
         mig_penalty_scale: float = 1.0,
         migration_budget: int = 3,
+        migration_volume_budget: float = 0.25,
+        migration_improve_margin: float = 0.05,
     ) -> None:
         self.comm_budget = comm_budget
         self.lyapunov_penalty = lyapunov_penalty
@@ -25,6 +27,8 @@ class SchedulerHeuristic:
         self.mig_overhead = mig_overhead
         self.mig_penalty_scale = mig_penalty_scale
         self.migration_budget = migration_budget
+        self.migration_volume_budget = migration_volume_budget
+        self.migration_improve_margin = migration_improve_margin
 
     def _ratios(
         self,
@@ -60,7 +64,7 @@ class SchedulerHeuristic:
         return comp_ratio, mem_ratio, comm_ratio
 
     def _score(self, base_score: float, lyapunov: float) -> float:
-        return base_score + max(lyapunov, 0.0) * self.lyapunov_penalty
+        return base_score * (1.0 + max(lyapunov, 0.0) * self.lyapunov_penalty)
 
     def _migration_penalty(
         self,
@@ -70,15 +74,16 @@ class SchedulerHeuristic:
         prev_assignment: Dict[Block, int],
         bandwidth: List[List[float]],
         migrations_used: int,
-    ) -> Tuple[float, bool]:
+    ) -> Tuple[float, float, bool]:
         if block not in prev_assignment or prev_assignment[block] == device:
-            return 0.0, False
+            return 0.0, 0.0, False
         src = prev_assignment[block]
         bw = bandwidth[src][device] + 1e-6
-        mig_cost = (demand.kv_cache / bw + self.mig_overhead) * self.mig_penalty_scale
+        mig_time = demand.kv_cache / bw + self.mig_overhead
+        mig_cost = mig_time * self.mig_penalty_scale
         if migrations_used >= self.migration_budget:
             mig_cost *= 2.0
-        return mig_cost, True
+        return mig_cost, demand.kv_cache, True
 
     def assign(
         self,
@@ -92,18 +97,20 @@ class SchedulerHeuristic:
         dependencies: List[Tuple[Block, Block]],
         activation_sizes: Dict[Tuple[Block, Block], float],
         bandwidth: List[List[float]],
-    ) -> Tuple[Dict[Block, int], List[Tuple[Block, int, int]], bool]:
+    ) -> Tuple[Dict[Block, int], List[Tuple[Block, int, int]], bool, str]:
         assignment: Dict[Block, int] = {}
         migrations: List[Tuple[Block, int, int]] = []
+        migration_volume = 0.0
         comp_used = [0.0 for _ in compute]
         mem_used = [0.0 for _ in memory]
         failed = False
+        failure_reason = ""
         priority = {"head": 0, "ffn": 1, "proj": 2}
         sorted_blocks = sorted(blocks, key=lambda b: (priority.get(b.kind, 3), -demands[b].memory, -demands[b].compute))
 
         for blk in sorted_blocks:
             demand = demands[blk]
-            candidate_scores: List[Tuple[int, float, float, bool, bool]] = []
+            candidate_scores: List[Tuple[int, float, float, bool, bool, float]] = []
             for dev in range(len(compute)):
                 comp_ratio, mem_ratio, comm_ratio = self._ratios(
                     blk,
@@ -119,7 +126,7 @@ class SchedulerHeuristic:
                     comp_used,
                     mem_used,
                 )
-                mig_penalty, will_migrate = self._migration_penalty(
+                mig_penalty, mig_volume, will_migrate = self._migration_penalty(
                     blk, demand, dev, prev_assignment, bandwidth, len(migrations)
                 )
                 comm_time = comm_ratio * self.comm_budget + mig_penalty
@@ -131,28 +138,46 @@ class SchedulerHeuristic:
                 comm_ratio_adj = comm_ratio_with_mig / weight_factor
 
                 base_score = max(comp_ratio_adj, mem_ratio_adj, comm_ratio_adj)
-                feasible = base_score <= 1.0 and (not will_migrate or len(migrations) < self.migration_budget)
+                feasible = (
+                    base_score <= 1.0
+                    and (not will_migrate or len(migrations) < self.migration_budget)
+                    and (not will_migrate or migration_volume + mig_volume <= self.migration_volume_budget)
+                )
                 final_score = self._score(base_score, lyapunov[dev])
-                candidate_scores.append((dev, final_score, base_score, feasible, will_migrate))
+                candidate_scores.append((dev, final_score, base_score, feasible, will_migrate, mig_volume))
 
             feasible_candidates = [c for c in candidate_scores if c[3]]
             if not feasible_candidates:
                 failed = True
-                dev, best_score, _, _, will_migrate = min(candidate_scores, key=lambda x: x[1])
+                failure_reason = "no_feasible"
+                dev, best_score, _, _, will_migrate, mig_volume = min(candidate_scores, key=lambda x: x[1])
             else:
-                dev, best_score, _, _, will_migrate = min(feasible_candidates, key=lambda x: x[1])
+                dev, best_score, _, _, will_migrate, mig_volume = min(feasible_candidates, key=lambda x: x[1])
                 if blk in prev_assignment:
                     prev_dev = prev_assignment[blk]
-                    prev_base = next((c[2] for c in candidate_scores if c[0] == prev_dev), float("inf"))
-                    prev_score = next((c[1] for c in candidate_scores if c[0] == prev_dev), float("inf"))
-                    if prev_base <= 1.0 and prev_score <= best_score:
+                    prev_tuple = next((c for c in candidate_scores if c[0] == prev_dev), None)
+                    if prev_tuple:
+                        prev_base = prev_tuple[2]
+                        prev_score = prev_tuple[1]
+                    else:
+                        prev_base = float("inf")
+                        prev_score = float("inf")
+                    if prev_base <= 1.0 and (
+                        prev_score <= best_score + self.migration_improve_margin or not will_migrate
+                    ):
                         dev = prev_dev
                         will_migrate = False
 
             if blk in prev_assignment and prev_assignment[blk] != dev and will_migrate:
                 migrations.append((blk, prev_assignment[blk], dev))
+                migration_volume += mig_volume
             comp_used[dev] += demand.compute
             mem_used[dev] += demand.memory
             assignment[blk] = dev
 
-        return assignment, migrations, failed
+        if migration_volume > self.migration_volume_budget and not failed:
+            failed = True
+            failure_reason = "migration_budget"
+        if failed and not failure_reason:
+            failure_reason = "constraint"
+        return assignment, migrations, failed, failure_reason

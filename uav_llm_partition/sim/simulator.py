@@ -32,8 +32,8 @@ class Simulator:
         self.num_uav = num_uav
         self.intervals = intervals
         self.mobility = MobilityModel(num_uav=num_uav)
-        self.channel = ChannelModel()
-        self.resource = ResourceModel(base_compute=1e9, base_memory=0.35)
+        self.channel = ChannelModel(base_rate=0.12)
+        self.resource = ResourceModel(base_compute=3.0e9, base_memory=0.1)
         self.weights = WeightManager()
         self.demand_model = DemandModel(
             num_layers=num_layers,
@@ -69,7 +69,7 @@ class Simulator:
             demands = self.demand_model.update_interval()
             activation_sizes = {(u, v): self.demand_model.activation_size(u, v) for u, v in self.dependencies}
             weights = self.weights.compute(compute, memory, los_score, mobility_risk)
-            assignment, migrations, failed = self.scheduler.assign(
+            assignment, migrations, failed, failure_reason = self.scheduler.assign(
                 self.blocks,
                 demands,
                 compute,
@@ -117,6 +117,7 @@ class Simulator:
                 migration_count=len(migrations),
                 migration_volume=mig_volume,
                 failure=failed,
+                failure_reason=failure_reason,
                 mem_loads=mem_ratio,
                 comp_loads=comp_ratio,
                 mem_used=mem_used,
@@ -133,8 +134,14 @@ class Simulator:
             )
             self.metrics.log(metrics)
             self.prev_assignment = assignment
+            device_lines = []
+            for idx in range(self.num_uav):
+                device_lines.append(
+                    f"d{idx}(load={loads[idx]:.2f}, q={lyapunov[idx]:.2f}, delay={total_delay_by_dev[idx]:.3f}, "
+                    f"comp={comp_ratio[idx]:.2f}, mem={mem_ratio[idx]:.2f})"
+                )
             logger.info(
-                "[t=%d] max_load=%.3f fairness=%.3f delay=%.3f comp=%.3f comm=%.3f mig=%.3f migs=%d failure=%s mem=%s comp=%s queue=%s comp_delay=%s comm_delay=%s mig_delay=%s total_delay=%s rho_w=%.2f rho_q=%.2f",
+                "[t=%d] max_load=%.3f fairness=%.3f delay=%.3f comp=%.3f comm=%.3f mig=%.3f migs=%d failure=%s reason=%s devices=%s rho_w=%.2f rho_q=%.2f",
                 t,
                 max_load,
                 fairness,
@@ -144,13 +151,8 @@ class Simulator:
                 delay_mig,
                 len(migrations),
                 failed,
-                [round(v, 3) for v in mem_ratio],
-                [round(v, 3) for v in comp_ratio],
-                [round(q, 3) for q in lyapunov],
-                [round(v, 3) for v in comp_delay_by_dev],
-                [round(v, 3) for v in comm_delay_by_dev],
-                [round(v, 3) for v in mig_delay_by_dev],
-                [round(v, 3) for v in total_delay_by_dev],
+                failure_reason or "",
+                " | ".join(device_lines),
                 self.scheduler.weight_scale,
                 self.scheduler.lyapunov_penalty,
             )

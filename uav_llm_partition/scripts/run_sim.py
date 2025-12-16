@@ -12,7 +12,7 @@ def main() -> None:
         hidden_size=1536,
         head_dim=None,
         intervals=20,
-        interval_tokens=16,
+        interval_tokens=12,
         initial_seq_len=128,
     )
     metrics = sim.run()
