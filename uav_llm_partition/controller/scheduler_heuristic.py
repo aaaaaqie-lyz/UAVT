@@ -12,14 +12,15 @@ class SchedulerHeuristic:
 
     def __init__(
         self,
-        comm_budget: float = 0.015,
+        comm_budget: float = 0.05,
         lyapunov_penalty: float = 0.5,
         weight_scale: float = 0.5,
         mig_overhead: float = 0.01,
         mig_penalty_scale: float = 1.0,
-        migration_budget: int = 3,
-        migration_volume_budget: float = 0.25,
+        migration_budget: int = 8,
+        migration_volume_budget: float = 0.5,
         migration_improve_margin: float = 0.05,
+        load_guard: float = 0.95,
     ) -> None:
         self.comm_budget = comm_budget
         self.lyapunov_penalty = lyapunov_penalty
@@ -29,6 +30,7 @@ class SchedulerHeuristic:
         self.migration_budget = migration_budget
         self.migration_volume_budget = migration_volume_budget
         self.migration_improve_margin = migration_improve_margin
+        self.load_guard = load_guard
 
     def _ratios(
         self,
@@ -110,7 +112,7 @@ class SchedulerHeuristic:
 
         for blk in sorted_blocks:
             demand = demands[blk]
-            candidate_scores: List[Tuple[int, float, float, bool, bool, float]] = []
+            candidate_scores: List[Tuple[int, float, float, bool, bool, float, float, float, float]] = []
             for dev in range(len(compute)):
                 comp_ratio, mem_ratio, comm_ratio = self._ratios(
                     blk,
@@ -140,19 +142,41 @@ class SchedulerHeuristic:
                 base_score = max(comp_ratio_adj, mem_ratio_adj, comm_ratio_adj)
                 feasible = (
                     base_score <= 1.0
+                    and max(comp_ratio_adj, mem_ratio_adj) <= self.load_guard
                     and (not will_migrate or len(migrations) < self.migration_budget)
                     and (not will_migrate or migration_volume + mig_volume <= self.migration_volume_budget)
                 )
                 final_score = self._score(base_score, lyapunov[dev])
-                candidate_scores.append((dev, final_score, base_score, feasible, will_migrate, mig_volume))
+                candidate_scores.append(
+                    (
+                        dev,
+                        final_score,
+                        base_score,
+                        feasible,
+                        will_migrate,
+                        mig_volume,
+                        comp_ratio_adj,
+                        mem_ratio_adj,
+                        comm_ratio_adj,
+                    )
+                )
 
             feasible_candidates = [c for c in candidate_scores if c[3]]
-            if not feasible_candidates:
-                failed = True
-                failure_reason = "no_feasible"
-                dev, best_score, _, _, will_migrate, mig_volume = min(candidate_scores, key=lambda x: x[1])
+            relaxed_candidates = [
+                c for c in candidate_scores if c[2] <= 1.0 and c[5] + migration_volume <= self.migration_volume_budget
+            ]
+            min_base = min(c[2] for c in candidate_scores)
+            if not feasible_candidates and not relaxed_candidates:
+                failed = min_base > 1.0
+                if failed:
+                    failure_reason = "no_feasible"
+                pool = candidate_scores
+                dev, best_score, _, _, will_migrate, mig_volume, *_ = min(pool, key=lambda x: x[1])
             else:
-                dev, best_score, _, _, will_migrate, mig_volume = min(feasible_candidates, key=lambda x: x[1])
+                pool = feasible_candidates if feasible_candidates else relaxed_candidates
+                dev, best_score, _, _, will_migrate, mig_volume, *_ = min(pool, key=lambda x: x[1])
+                if not feasible_candidates:
+                    failure_reason = failure_reason or "guard_relaxed"
                 if blk in prev_assignment:
                     prev_dev = prev_assignment[blk]
                     prev_tuple = next((c for c in candidate_scores if c[0] == prev_dev), None)

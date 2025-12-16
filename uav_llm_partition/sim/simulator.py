@@ -6,6 +6,7 @@ from typing import Dict, List, Tuple
 from uav_llm_partition.controller.lyapunov import LyapunovQueue
 from uav_llm_partition.controller.scheduler_heuristic import SchedulerHeuristic
 from uav_llm_partition.controller.scheduler_rl_param import RLSchedulerParam
+from uav_llm_partition.controller.state_collector import StateCollector
 from uav_llm_partition.controller.weight_manager import WeightManager
 from uav_llm_partition.env.channel_model import ChannelModel
 from uav_llm_partition.env.resource_model import ResourceModel
@@ -32,8 +33,8 @@ class Simulator:
         self.num_uav = num_uav
         self.intervals = intervals
         self.mobility = MobilityModel(num_uav=num_uav)
-        self.channel = ChannelModel(base_rate=0.12)
-        self.resource = ResourceModel(base_compute=3.0e9, base_memory=0.1)
+        self.channel = ChannelModel(base_rate=0.02)
+        self.resource = ResourceModel(base_compute=4.0e9, base_memory=0.05)
         self.weights = WeightManager()
         self.demand_model = DemandModel(
             num_layers=num_layers,
@@ -46,6 +47,7 @@ class Simulator:
         self.scheduler = SchedulerHeuristic()
         self.lyapunov = LyapunovQueue(num_uav=num_uav)
         self.rl_param = RLSchedulerParam()
+        self.state_collector = StateCollector()
         self.metrics = MetricsLogger()
         self.blocks = self.demand_model.blocks()
         self.dependencies = build_dependencies(self.blocks, num_heads=num_heads)
@@ -69,6 +71,16 @@ class Simulator:
             demands = self.demand_model.update_interval()
             activation_sizes = {(u, v): self.demand_model.activation_size(u, v) for u, v in self.dependencies}
             weights = self.weights.compute(compute, memory, los_score, mobility_risk)
+            controller_state = self.state_collector.build_state(
+                compute=compute,
+                memory=memory,
+                weights=weights,
+                lyapunov=lyapunov,
+                positions=positions,
+                los_score=los_score,
+                mobility_risk=mobility_risk,
+                demands=demands,
+            )
             assignment, migrations, failed, failure_reason = self.scheduler.assign(
                 self.blocks,
                 demands,
@@ -96,14 +108,15 @@ class Simulator:
             rl_reward = -(
                 total_delay
                 + max_load
-                + (10.0 if failed else 0.0)
-                + (0.2 * len(migrations))
-                + (0.1 * mig_volume)
+                + (8.0 if failed else 0.0)
+                + (0.4 * len(migrations))
+                + (0.2 * mig_volume)
             )
             self._reward_buffer.append(rl_reward)
             if (t + 1) % rl_params.window == 0:
                 window_reward = sum(self._reward_buffer[-rl_params.window :]) / rl_params.window
-                rl_params = self.rl_param.update_from_reward(window_reward)
+                avg_queue = sum(lyapunov) / len(lyapunov) if lyapunov else 0.0
+                rl_params = self.rl_param.update_from_reward(window_reward, avg_queue=avg_queue)
                 self.scheduler.weight_scale = rl_params.rho_w
                 self.scheduler.lyapunov_penalty = rl_params.rho_q
 
@@ -137,8 +150,14 @@ class Simulator:
             device_lines = []
             for idx in range(self.num_uav):
                 device_lines.append(
-                    f"d{idx}(load={loads[idx]:.2f}, q={lyapunov[idx]:.2f}, delay={total_delay_by_dev[idx]:.3f}, "
-                    f"comp={comp_ratio[idx]:.2f}, mem={mem_ratio[idx]:.2f})"
+                    "d{idx}:delay={delay:.3f},load={load:.2f},comp={comp:.2f},mem={mem:.2f},q={q:.2f}".format(
+                        idx=idx,
+                        delay=total_delay_by_dev[idx],
+                        load=loads[idx],
+                        comp=comp_ratio[idx],
+                        mem=mem_ratio[idx],
+                        q=lyapunov[idx],
+                    )
                 )
             logger.info(
                 "[t=%d] max_load=%.3f fairness=%.3f delay=%.3f comp=%.3f comm=%.3f mig=%.3f migs=%d failure=%s reason=%s devices=%s rho_w=%.2f rho_q=%.2f",
