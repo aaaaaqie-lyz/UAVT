@@ -21,11 +21,11 @@ class DemandModel:
         self.hidden_size = hidden_size
         self.head_dim = head_dim
         self.interval_tokens = interval_tokens
-        self.kv_cache_per_token = head_dim * 2.0  # key + value
+        self.kv_cache_per_token = head_dim * 0.05  # scaled for simulation stability
         self.static_head_mem = head_dim * 0.1
         self.proj_mem = hidden_size * 0.05
         self.ffn_mem = hidden_size * 0.08
-        self.compute_scaler = hidden_size * 2.5
+        self.compute_scaler = hidden_size * 1.5
         self.token_count = 0
         self.demands: Dict[Block, BlockDemand] = {}
         self._init_blocks()

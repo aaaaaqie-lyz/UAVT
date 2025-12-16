@@ -38,6 +38,9 @@ class Simulator:
         self.metrics = MetricsLogger()
         self.blocks = self.demand_model.blocks()
         self.dependencies = build_dependencies(self.blocks, num_heads=num_heads)
+        self.activation_sizes = {
+            (u, v): self.demand_model.activation_size(u, v) for u, v in self.dependencies
+        }
         self.prev_assignment: Dict[Block, int] = {}
 
     def run(self) -> MetricsLogger:
@@ -61,6 +64,9 @@ class Simulator:
                 weights,
                 lyapunov=self.lyapunov.pressure(),
                 prev_assignment=self.prev_assignment,
+                dependencies=self.dependencies,
+                activation_sizes=self.activation_sizes,
+                bandwidth=bandwidth,
             )
             delay_comp, comp_load = self._compute_delay(assignment, demands, compute)
             delay_comm = self._communication_delay(assignment, bandwidth)
