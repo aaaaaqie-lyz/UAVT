@@ -5,6 +5,15 @@ from typing import Dict, List, Tuple
 
 from uav_llm_partition.controller.lyapunov import LyapunovQueue
 from uav_llm_partition.controller.scheduler_heuristic import SchedulerHeuristic
+from uav_llm_partition.controller.scheduler_baselines import (
+    BaseScheduler,
+    DPScheduler,
+    GreedyScheduler,
+    MinLoadScheduler,
+    ResourceAwareGreedyScheduler,
+    RoundRobinScheduler,
+)
+from uav_llm_partition.controller.scheduler_layer import LayerPartitionScheduler
 from uav_llm_partition.controller.scheduler_rl_param import RLSchedulerParam
 from uav_llm_partition.controller.state_collector import StateCollector
 from uav_llm_partition.controller.weight_manager import WeightManager
@@ -29,6 +38,12 @@ class Simulator:
         intervals: int = 50,
         interval_tokens: int = 16,
         initial_seq_len: int = 128,
+        use_lyapunov: bool = True,
+        lyapunov_mode: str = "adaptive",
+        lyapunov_penalty_value: float = 0.5,
+        scheduler_type: str = "heuristic",
+        layer_strategy: str = "round_robin",
+        lyapunov_theta: float = 0.3,
     ) -> None:
         self.num_uav = num_uav
         self.intervals = intervals
@@ -44,8 +59,13 @@ class Simulator:
             interval_tokens=interval_tokens,
             initial_seq_len=initial_seq_len,
         )
-        self.scheduler = SchedulerHeuristic()
-        self.lyapunov = LyapunovQueue(num_uav=num_uav)
+        self.use_lyapunov = use_lyapunov
+        self.lyapunov_mode = lyapunov_mode
+        self.lyapunov_penalty_value = lyapunov_penalty_value
+        self.scheduler_type = scheduler_type
+        self.layer_strategy = layer_strategy
+        self.scheduler = self._create_scheduler(scheduler_type, layer_strategy)
+        self.lyapunov = LyapunovQueue(num_uav=num_uav, theta=lyapunov_theta)
         self.rl_param = RLSchedulerParam()
         self.state_collector = StateCollector()
         self.metrics = MetricsLogger()
@@ -54,15 +74,44 @@ class Simulator:
         self.prev_assignment: Dict[Block, int] = {}
         self._reward_buffer: List[float] = []
 
+    def _create_scheduler(self, scheduler_type: str, layer_strategy: str):
+        scheduler_type = (scheduler_type or "heuristic").lower()
+        if scheduler_type == "heuristic":
+            return SchedulerHeuristic()
+        if scheduler_type == "layer":
+            return LayerPartitionScheduler(strategy=layer_strategy)
+        if scheduler_type == "greedy":
+            return GreedyScheduler()
+        if scheduler_type == "min_load":
+            return MinLoadScheduler()
+        if scheduler_type == "round_robin":
+            return RoundRobinScheduler()
+        if scheduler_type == "resource_aware":
+            return ResourceAwareGreedyScheduler()
+        if scheduler_type == "dp":
+            return DPScheduler()
+        logger.warning("Unknown scheduler_type=%s, fallback to heuristic", scheduler_type)
+        return SchedulerHeuristic()
+
     def run(self) -> MetricsLogger:
         positions, mobility_risk = self.mobility.update()
         bandwidth, conn, los_score = self.channel.compute(positions)
         compute, memory = self.resource.sample(self.num_uav)
         weights = self.weights.compute(compute, memory, los_score, mobility_risk)
-        lyapunov = self.lyapunov.pressure()
+        lyapunov = self.lyapunov.pressure() if self.use_lyapunov and self.lyapunov_mode != "none" else [0.0] * self.num_uav
         rl_params = self.rl_param.get()
-        self.scheduler.weight_scale = rl_params.rho_w
-        self.scheduler.lyapunov_penalty = rl_params.rho_q
+        if isinstance(self.scheduler, SchedulerHeuristic):
+            self.scheduler.weight_scale = rl_params.rho_w
+            self.scheduler.lyapunov_penalty = rl_params.rho_q
+            if self.lyapunov_mode == "fixed":
+                self.scheduler.lyapunov_penalty = self.lyapunov_penalty_value
+                self.scheduler.lyapunov_add_penalty = self.lyapunov_penalty_value / 2
+            elif self.lyapunov_mode == "none":
+                self.scheduler.lyapunov_penalty = 0.0
+                self.scheduler.lyapunov_add_penalty = 0.0
+            elif self.lyapunov_mode == "enhanced":
+                self.scheduler.lyapunov_penalty = max(self.lyapunov_penalty_value, self.scheduler.lyapunov_penalty)
+                self.scheduler.queue_block_threshold = 0.9
 
         for t in range(self.intervals):
             positions, mobility_risk = self.mobility.update()
@@ -81,18 +130,28 @@ class Simulator:
                 mobility_risk=mobility_risk,
                 demands=demands,
             )
-            assignment, migrations, failed, failure_reason = self.scheduler.assign(
+            lyapunov_for_sched = lyapunov if self.use_lyapunov and self.lyapunov_mode != "none" else [0.0] * self.num_uav
+            result = self.scheduler.assign(
                 self.blocks,
                 demands,
                 compute,
                 memory,
                 weights,
-                lyapunov=self.lyapunov.pressure(),
+                lyapunov=lyapunov_for_sched,
                 prev_assignment=self.prev_assignment,
                 dependencies=self.dependencies,
                 activation_sizes=activation_sizes,
                 bandwidth=bandwidth,
             )
+            if isinstance(result, tuple):
+                assignment, migrations, failed, failure_reason = result
+            else:
+                assignment, migrations, failed, failure_reason = (
+                    result.assignment,
+                    result.migrations,
+                    result.failed,
+                    result.reason,
+                )
             delay_comp, comp_load, comp_delay_by_dev = self._compute_delay(assignment, demands, compute)
             delay_comm, comm_delay_by_dev = self._communication_delay(assignment, bandwidth, activation_sizes)
             delay_mig, mig_volume, mig_delay_by_dev = self._migration_delay(migrations, bandwidth, demands)
@@ -103,7 +162,10 @@ class Simulator:
             loads, mem_ratio, comp_ratio, mem_used, comp_used = self._load_vector(assignment, demands, compute, memory)
             max_load = max(loads)
             fairness = jain_fairness(loads)
-            lyapunov = self.lyapunov.update(loads)
+            if self.use_lyapunov and self.lyapunov_mode != "none":
+                lyapunov = self.lyapunov.update(loads)
+            else:
+                lyapunov = [0.0 for _ in range(self.num_uav)]
 
             rl_reward = -(
                 total_delay
@@ -112,13 +174,14 @@ class Simulator:
                 + (0.4 * len(migrations))
                 + (0.2 * mig_volume)
             )
-            self._reward_buffer.append(rl_reward)
-            if (t + 1) % rl_params.window == 0:
-                window_reward = sum(self._reward_buffer[-rl_params.window :]) / rl_params.window
-                avg_queue = sum(lyapunov) / len(lyapunov) if lyapunov else 0.0
-                rl_params = self.rl_param.update_from_reward(window_reward, avg_queue=avg_queue)
-                self.scheduler.weight_scale = rl_params.rho_w
-                self.scheduler.lyapunov_penalty = rl_params.rho_q
+            if self.lyapunov_mode == "adaptive" and isinstance(self.scheduler, SchedulerHeuristic):
+                self._reward_buffer.append(rl_reward)
+                if (t + 1) % rl_params.window == 0:
+                    window_reward = sum(self._reward_buffer[-rl_params.window :]) / rl_params.window
+                    avg_queue = sum(lyapunov) / len(lyapunov) if lyapunov else 0.0
+                    rl_params = self.rl_param.update_from_reward(window_reward, avg_queue=avg_queue)
+                    self.scheduler.weight_scale = rl_params.rho_w
+                    self.scheduler.lyapunov_penalty = rl_params.rho_q
 
             metrics = IntervalMetrics(
                 max_load=max_load,
@@ -142,8 +205,8 @@ class Simulator:
                 loads=loads,
                 queues=lyapunov,
                 weights=weights,
-                rho_w=self.scheduler.weight_scale,
-                rho_q=self.scheduler.lyapunov_penalty,
+                rho_w=getattr(self.scheduler, "weight_scale", 0.0),
+                rho_q=getattr(self.scheduler, "lyapunov_penalty", 0.0),
             )
             self.metrics.log(metrics)
             self.prev_assignment = assignment
@@ -181,8 +244,8 @@ class Simulator:
                 failed,
                 failure_reason or "",
                 " | ".join(device_lines),
-                self.scheduler.weight_scale,
-                self.scheduler.lyapunov_penalty,
+                getattr(self.scheduler, "weight_scale", 0.0),
+                getattr(self.scheduler, "lyapunov_penalty", 0.0),
             )
         return self.metrics
 

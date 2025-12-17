@@ -27,6 +27,7 @@ class SchedulerHeuristic:
         global_load_bias: float = 0.25,
         queue_penalty_scale: float = 0.4,
         preventive_queue_threshold: float = 0.6,
+        queue_block_threshold: float | None = None,
     ) -> None:
         self.comm_budget = comm_budget
         self.lyapunov_penalty = lyapunov_penalty
@@ -43,6 +44,7 @@ class SchedulerHeuristic:
         self.global_load_bias = global_load_bias
         self.queue_penalty_scale = queue_penalty_scale
         self.preventive_queue_threshold = preventive_queue_threshold
+        self.queue_block_threshold = queue_block_threshold
 
     def _ratios(
         self,
@@ -168,15 +170,21 @@ class SchedulerHeuristic:
                     (comp_used[dev] + demand.compute) / max(compute[dev], 1e-6),
                     (mem_used[dev] + demand.memory) / max(memory[dev], 1e-6),
                 )
+                queue_pressure = lyapunov[dev] if dev < len(lyapunov) else 0.0
+                if self.queue_block_threshold is not None and queue_pressure > self.queue_block_threshold:
+                    feasible = False
+                else:
+                    feasible = True
                 global_ok = global_load <= self.load_guard or will_migrate
                 feasible = (
-                    base_score <= 1.0
+                    feasible
+                    and base_score <= 1.0
                     and max(comp_ratio_adj, mem_ratio_adj) <= self.load_guard
                     and global_ok
                     and (not will_migrate or len(migrations) < self.migration_budget)
                     and (not will_migrate or migration_volume + mig_volume <= self.migration_volume_budget)
                 )
-                final_score = self._score(base_score, lyapunov[dev], load_term, global_load)
+                final_score = self._score(base_score, queue_pressure, load_term, global_load)
                 candidate_scores.append(
                     (
                         dev,
