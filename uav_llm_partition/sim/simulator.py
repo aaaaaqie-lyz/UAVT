@@ -210,17 +210,30 @@ class Simulator:
             )
             self.metrics.log(metrics)
             self.prev_assignment = assignment
-            layer_map = [set() for _ in range(self.num_uav)]
+            block_list = [[] for _ in range(self.num_uav)]
+            kind_order = {"head": 0, "proj": 1, "ffn": 2}
             for blk, dev in assignment.items():
-                layer_map[dev].add(blk.layer)
+                block_list[dev].append(blk)
             device_lines = []
             for idx in range(self.num_uav):
-                layers = sorted(layer_map[idx])
-                layer_str = "[" + ",".join(str(l) for l in layers) + "]"
+                blocks = sorted(
+                    block_list[idx], key=lambda b: (b.layer, kind_order.get(b.kind, 3), b.head_index or -1)
+                )
+                layer_set = sorted({b.layer for b in blocks})
+                block_desc = []
+                for b in blocks:
+                    if b.kind == "head":
+                        block_desc.append(f"L{b.layer}H{b.head_index}")
+                    elif b.kind == "proj":
+                        block_desc.append(f"L{b.layer}P")
+                    else:
+                        block_desc.append(f"L{b.layer}F")
+                layer_str = "[" + ",".join(str(l) for l in layer_set) + "]"
+                block_str = "[" + ",".join(block_desc) + "]"
                 device_lines.append(
                     (
                         "d{idx}:delay={delay:.3f} load={load:.2f} comp={comp:.2f} mem={mem:.2f} q={q:.2f} "
-                        "layers={layers}"
+                        "layers={layers} blocks={blocks}"
                     ).format(
                         idx=idx,
                         delay=total_delay_by_dev[idx],
@@ -229,6 +242,7 @@ class Simulator:
                         mem=mem_ratio[idx],
                         q=lyapunov[idx],
                         layers=layer_str,
+                        blocks=block_str,
                     )
                 )
             logger.info(
