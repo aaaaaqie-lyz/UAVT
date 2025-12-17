@@ -24,6 +24,9 @@ class SchedulerHeuristic:
         load_guard: float = 0.9,
         load_balance_bias: float = 0.15,
         preventive_threshold: float = 0.85,
+        global_load_bias: float = 0.25,
+        queue_penalty_scale: float = 0.4,
+        preventive_queue_threshold: float = 0.6,
     ) -> None:
         self.comm_budget = comm_budget
         self.lyapunov_penalty = lyapunov_penalty
@@ -37,6 +40,9 @@ class SchedulerHeuristic:
         self.load_guard = load_guard
         self.load_balance_bias = load_balance_bias
         self.preventive_threshold = preventive_threshold
+        self.global_load_bias = global_load_bias
+        self.queue_penalty_scale = queue_penalty_scale
+        self.preventive_queue_threshold = preventive_queue_threshold
 
     def _ratios(
         self,
@@ -71,12 +77,15 @@ class SchedulerHeuristic:
         comm_ratio = comm_delay / self.comm_budget
         return comp_ratio, mem_ratio, comm_ratio
 
-    def _score(self, base_score: float, lyapunov: float, load_term: float) -> float:
+    def _score(self, base_score: float, lyapunov: float, load_term: float, global_load: float) -> float:
         queue = max(lyapunov, 0.0)
         return (
-            base_score * (1.0 + queue * self.lyapunov_penalty)
+            base_score
+            * (1.0 + queue * self.lyapunov_penalty)
+            * (1.0 + queue * self.queue_penalty_scale)
             + queue * self.lyapunov_add_penalty
             + self.load_balance_bias * load_term
+            + self.global_load_bias * global_load
         )
 
     def _migration_penalty(
@@ -125,6 +134,10 @@ class SchedulerHeuristic:
             demand = demands[blk]
             candidate_scores: List[Tuple[int, float, float, bool, bool, float, float, float, float, float]] = []
             for dev in range(len(compute)):
+                global_load = max(
+                    comp_used[dev] / max(compute[dev], 1e-6),
+                    mem_used[dev] / max(memory[dev], 1e-6),
+                )
                 comp_ratio, mem_ratio, comm_ratio = self._ratios(
                     blk,
                     demand,
@@ -155,13 +168,15 @@ class SchedulerHeuristic:
                     (comp_used[dev] + demand.compute) / max(compute[dev], 1e-6),
                     (mem_used[dev] + demand.memory) / max(memory[dev], 1e-6),
                 )
+                global_ok = global_load <= self.load_guard or will_migrate
                 feasible = (
                     base_score <= 1.0
                     and max(comp_ratio_adj, mem_ratio_adj) <= self.load_guard
+                    and global_ok
                     and (not will_migrate or len(migrations) < self.migration_budget)
                     and (not will_migrate or migration_volume + mig_volume <= self.migration_volume_budget)
                 )
-                final_score = self._score(base_score, lyapunov[dev], load_term)
+                final_score = self._score(base_score, lyapunov[dev], load_term, global_load)
                 candidate_scores.append(
                     (
                         dev,
@@ -174,12 +189,15 @@ class SchedulerHeuristic:
                         mem_ratio_adj,
                         comm_ratio_adj,
                         load_term,
+                        global_load,
                     )
                 )
 
             feasible_candidates = [c for c in candidate_scores if c[3]]
             relaxed_candidates = [
-                c for c in candidate_scores if c[2] <= 1.0 and c[5] + migration_volume <= self.migration_volume_budget
+                c
+                for c in candidate_scores
+                if c[2] <= 1.0 and c[5] + migration_volume <= self.migration_volume_budget
             ]
             min_base = min(c[2] for c in candidate_scores)
             if not feasible_candidates and not relaxed_candidates:
@@ -187,16 +205,16 @@ class SchedulerHeuristic:
                 if failed:
                     failure_reason = "no_feasible"
                 pool = candidate_scores
-                dev, best_score, _, _, will_migrate, mig_volume, *_rest = min(
-                    pool, key=lambda x: (x[1], x[9])
+                dev, best_score, _, _, will_migrate, mig_volume, comp_r, mem_r, comm_r, load_term, global_load = min(
+                    pool, key=lambda x: (x[1], x[9], x[10])
                 )
-                chosen_load = _rest[-1]
+                chosen_load = load_term
             else:
                 pool = feasible_candidates if feasible_candidates else relaxed_candidates
-                dev, best_score, _, _, will_migrate, mig_volume, *_rest = min(
-                    pool, key=lambda x: (x[1], x[9])
+                dev, best_score, _, _, will_migrate, mig_volume, comp_r, mem_r, comm_r, load_term, global_load = min(
+                    pool, key=lambda x: (x[1], x[9], x[10])
                 )
-                chosen_load = _rest[-1]
+                chosen_load = load_term
                 if not feasible_candidates:
                     failure_reason = failure_reason or "guard_relaxed"
                 if blk in prev_assignment:
@@ -212,7 +230,8 @@ class SchedulerHeuristic:
                         prev_load = float("inf")
 
                     if prev_base <= 1.0:
-                        preemptive = prev_load >= self.preventive_threshold
+                        queue_pressure = lyapunov[prev_dev] if prev_dev < len(lyapunov) else 0.0
+                        preemptive = prev_load >= self.preventive_threshold or queue_pressure >= self.preventive_queue_threshold
                         better_score = best_score + self.migration_improve_margin < prev_score
                         lower_load = chosen_load + self.migration_improve_margin < prev_load
                         if not preemptive and (prev_score <= best_score + self.migration_improve_margin or not will_migrate):

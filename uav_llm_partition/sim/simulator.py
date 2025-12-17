@@ -147,16 +147,25 @@ class Simulator:
             )
             self.metrics.log(metrics)
             self.prev_assignment = assignment
+            layer_map = [set() for _ in range(self.num_uav)]
+            for blk, dev in assignment.items():
+                layer_map[dev].add(blk.layer)
             device_lines = []
             for idx in range(self.num_uav):
+                layers = sorted(layer_map[idx])
+                layer_str = "[" + ",".join(str(l) for l in layers) + "]"
                 device_lines.append(
-                    "d{idx}:delay={delay:.3f},load={load:.2f},comp={comp:.2f},mem={mem:.2f},q={q:.2f}".format(
+                    (
+                        "d{idx}:delay={delay:.3f} load={load:.2f} comp={comp:.2f} mem={mem:.2f} q={q:.2f} "
+                        "layers={layers}"
+                    ).format(
                         idx=idx,
                         delay=total_delay_by_dev[idx],
                         load=loads[idx],
                         comp=comp_ratio[idx],
                         mem=mem_ratio[idx],
                         q=lyapunov[idx],
+                        layers=layer_str,
                     )
                 )
             logger.info(
