@@ -230,23 +230,24 @@ class Simulator:
                         block_desc.append(f"L{b.layer}F")
                 layer_str = "[" + ",".join(str(l) for l in layer_set) + "]"
                 block_str = "[" + ",".join(block_desc) + "]"
-                device_lines.append(
-                    (
-                        "d{idx}:delay={delay:.3f} load={load:.2f} comp={comp:.2f} mem={mem:.2f} q={q:.2f} "
-                        "layers={layers} blocks={blocks}"
-                    ).format(
-                        idx=idx,
-                        delay=total_delay_by_dev[idx],
-                        load=loads[idx],
-                        comp=comp_ratio[idx],
-                        mem=mem_ratio[idx],
-                        q=lyapunov[idx],
-                        layers=layer_str,
-                        blocks=block_str,
-                    )
+                device_line = (
+                    "d{idx}:delay={delay:.3f} load={load:.2f} comp={comp:.2f} mem={mem:.2f} q={q:.2f} "
+                    "layers={layers} blocks={blocks}"
+                ).format(
+                    idx=idx,
+                    delay=total_delay_by_dev[idx],
+                    load=loads[idx],
+                    comp=comp_ratio[idx],
+                    mem=mem_ratio[idx],
+                    q=lyapunov[idx],
+                    layers=layer_str,
+                    blocks=block_str,
                 )
+                device_lines.append(device_line)
+            
+            # First line: basic metrics
             logger.info(
-                "[t=%d] max_load=%.3f fairness=%.3f delay=%.3f comp=%.3f comm=%.3f mig=%.3f migs=%d failure=%s reason=%s devices=%s rho_w=%.2f rho_q=%.2f",
+                "[t=%d] max_load=%.3f fairness=%.3f delay=%.3f comp=%.3f comm=%.3f mig=%.3f migs=%d failure=%s reason=%s",
                 t,
                 max_load,
                 fairness,
@@ -257,7 +258,17 @@ class Simulator:
                 len(migrations),
                 failed,
                 failure_reason or "",
-                " | ".join(device_lines),
+            )
+            
+            # Device lines: each device on a separate line, first one with "devices=" prefix
+            if device_lines:
+                logger.info("devices=%s", device_lines[0])
+                for device_line in device_lines[1:]:
+                    logger.info(device_line)
+            
+            # Last line: rho parameters
+            logger.info(
+                "rho_w=%.2f rho_q=%.2f",
                 getattr(self.scheduler, "weight_scale", 0.0),
                 getattr(self.scheduler, "lyapunov_penalty", 0.0),
             )
