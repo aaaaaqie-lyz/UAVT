@@ -251,22 +251,24 @@ class Simulator:
                         blocks=block_str,
                     )
                 )
-            logger.info(
-                "[t=%d] max_load=%.3f fairness=%.3f delay=%.3f comp=%.3f comm=%.3f mig=%.3f migs=%d failure=%s reason=%s devices=%s rho_w=%.2f rho_q=%.2f",
-                t,
-                max_load,
-                fairness,
-                total_delay,
-                delay_comp,
-                delay_comm,
-                delay_mig,
-                len(migrations),
-                failed,
-                failure_reason or "",
-                " | ".join(device_lines),
-                getattr(self.scheduler, "weight_scale", 0.0),
-                getattr(self.scheduler, "lyapunov_penalty", 0.0),
+            log_lines = [
+                f"[t={t}] max_load={max_load:.3f} fairness={fairness:.3f}",
+                f"delay={total_delay:.3f} comp={delay_comp:.3f}",
+                f"comm={delay_comm:.3f} mig={delay_mig:.3f} migs={len(migrations)}",
+                f"failure={failed} reason={failure_reason or ''}",
+                "devices=",
+            ]
+            for line in device_lines:
+                dev_line, layer_block = line.split(" layers=")
+                log_lines.append(dev_line)
+                log_lines.append(f"layers={layer_block}")
+            log_lines.append(
+                "rho_w={:.2f} rho_q={:.2f}".format(
+                    getattr(self.scheduler, "weight_scale", 0.0),
+                    getattr(self.scheduler, "lyapunov_penalty", 0.0),
+                )
             )
+            logger.info("\n ".join(log_lines))
         return self.metrics
 
     def _compute_delay(
