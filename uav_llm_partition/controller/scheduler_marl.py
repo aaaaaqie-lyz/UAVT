@@ -12,14 +12,22 @@ from .scheduler_baselines import SchedulerResult
 
 
 class MARLScheduler:
-    def __init__(self, load_guard: float = 1.0) -> None:
+    def __init__(self, load_guard: float = 1.0, model_path: str | None = None) -> None:
         self.load_guard = load_guard
         self.agent: MAPPOAgent | None = None
+        self.model_path = model_path
 
     def _ensure_agent(self, num_agents: int, local_state_dim: int) -> None:
-        if self.agent is None:
-            # bids are scalar per agent; action_dim equals num_agents to mirror device ids
-            self.agent = MAPPOAgent(num_agents=num_agents, local_state_dim=local_state_dim, action_dim=num_agents)
+        if self.agent is not None:
+            return
+        if self.model_path:
+            try:
+                self.agent = MAPPOAgent.load(self.model_path)
+                return
+            except FileNotFoundError:
+                logger.warning("MARL model path %s not found, creating fresh agent", self.model_path)
+        # bids are scalar per agent; action_dim equals num_agents to mirror device ids
+        self.agent = MAPPOAgent(num_agents=num_agents, local_state_dim=local_state_dim, action_dim=num_agents)
 
     def assign(
         self,

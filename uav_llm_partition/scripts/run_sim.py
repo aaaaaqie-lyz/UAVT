@@ -1,10 +1,17 @@
 """Entry point to run the UAV LLM partition simulator."""
 from __future__ import annotations
 
+import argparse
+
 from uav_llm_partition.sim.simulator import Simulator
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Run UAV partition simulator")
+    parser.add_argument("--scheduler", type=str, default="heuristic", help="scheduler type (heuristic|marl|rl|...)")
+    parser.add_argument("--marl-model", type=str, default=None, help="path to a trained MARL model to load")
+    args = parser.parse_args()
+
     sim = Simulator(
         num_uav=4,
         num_layers=2,
@@ -14,6 +21,8 @@ def main() -> None:
         intervals=20,
         interval_tokens=10,
         initial_seq_len=128,
+        scheduler_type=args.scheduler,
+        scheduler_model_path=args.marl_model,
     )
     metrics = sim.run()
     summary = metrics.aggregate()

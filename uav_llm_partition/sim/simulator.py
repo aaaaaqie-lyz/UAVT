@@ -46,6 +46,7 @@ class Simulator:
         scheduler_type: str = "heuristic",
         layer_strategy: str = "round_robin",
         lyapunov_theta: float = 0.3,
+        scheduler_model_path: str | None = None,
     ) -> None:
         self.num_uav = num_uav
         self.intervals = intervals
@@ -66,6 +67,7 @@ class Simulator:
         self.lyapunov_penalty_value = lyapunov_penalty_value
         self.scheduler_type = scheduler_type
         self.layer_strategy = layer_strategy
+        self.scheduler_model_path = scheduler_model_path
         self.scheduler = self._create_scheduler(scheduler_type, layer_strategy)
         self.lyapunov = LyapunovQueue(num_uav=num_uav, theta=lyapunov_theta)
         self.rl_param = RLSchedulerParam()
@@ -95,7 +97,7 @@ class Simulator:
         if scheduler_type == "rl":
             return RLScheduler()
         if scheduler_type == "marl":
-            return MARLScheduler()
+            return MARLScheduler(model_path=self.scheduler_model_path)
         logger.warning("Unknown scheduler_type=%s, fallback to heuristic", scheduler_type)
         return SchedulerHeuristic()
 

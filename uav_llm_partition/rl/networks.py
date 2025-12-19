@@ -44,6 +44,33 @@ class PolicyNetwork:
         logits = _dot(x, self.weights[-1], self.biases[-1])
         return _softmax(logits)
 
+    # -----------------------------
+    # Persistence helpers
+    # -----------------------------
+    def to_dict(self) -> dict:
+        return {"weights": self.weights, "biases": self.biases}
+
+    @classmethod
+    def from_dict(cls, payload: dict) -> "PolicyNetwork":
+        obj: "PolicyNetwork" = cls.__new__(cls)  # type: ignore[call-arg]
+        obj.weights = payload["weights"]
+        obj.biases = payload["biases"]
+        return obj
+
+    def save(self, path: str) -> None:
+        import json
+
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(self.to_dict(), f)
+
+    @classmethod
+    def load(cls, path: str) -> "PolicyNetwork":
+        import json
+
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return cls.from_dict(data)
+
     def get_log_prob(self, probs: Sequence[float], action: int) -> float:
         return math.log(max(probs[action], 1e-8))
 
@@ -105,6 +132,33 @@ class ValueNetwork:
             x = _relu(_dot(x, W, b))
         out = _dot(x, self.weights[-1], self.biases[-1])[0]
         return out
+
+    # -----------------------------
+    # Persistence helpers
+    # -----------------------------
+    def to_dict(self) -> dict:
+        return {"weights": self.weights, "biases": self.biases}
+
+    @classmethod
+    def from_dict(cls, payload: dict) -> "ValueNetwork":
+        obj: "ValueNetwork" = cls.__new__(cls)  # type: ignore[call-arg]
+        obj.weights = payload["weights"]
+        obj.biases = payload["biases"]
+        return obj
+
+    def save(self, path: str) -> None:
+        import json
+
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(self.to_dict(), f)
+
+    @classmethod
+    def load(cls, path: str) -> "ValueNetwork":
+        import json
+
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return cls.from_dict(data)
 
     def update(self, states, targets, lr: float = 1e-3, max_grad_norm: float = 0.5) -> None:
         for state, target in zip(states, targets):

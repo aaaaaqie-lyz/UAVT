@@ -150,3 +150,31 @@ class MAPPOAgent:
             "value_loss": total_value_loss / updates,
             "entropy": total_entropy / updates,
         }
+
+    # -----------------------------
+    # Persistence helpers
+    # -----------------------------
+    def to_dict(self) -> dict:
+        return {
+            "config": self.cfg.__dict__,
+            "actors": [actor.to_dict() for actor in self.actors],
+            "critic": self.critic.to_dict(),
+        }
+
+    def save(self, path: str) -> None:
+        import json
+
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(self.to_dict(), f)
+
+    @classmethod
+    def load(cls, path: str) -> "MAPPOAgent":
+        import json
+
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        cfg = MAPPOConfig(**data["config"])
+        agent = cls(cfg)
+        agent.actors = [PolicyNetwork.from_dict(p) for p in data.get("actors", [])]
+        agent.critic = ValueNetwork.from_dict(data["critic"])
+        return agent

@@ -11,6 +11,12 @@ from uav_llm_partition.sim.simulator import Simulator
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train multi-agent scheduler")
     parser.add_argument("--episodes", type=int, default=500, help="number of training episodes")
+    parser.add_argument(
+        "--model-path", type=str, default="marl_agent.json", help="where to save the trained MARL model"
+    )
+    parser.add_argument(
+        "--resume", action="store_true", help="resume from the provided model path if it exists"
+    )
     args = parser.parse_args()
 
     def _env_factory():
@@ -64,9 +70,18 @@ def main() -> None:
             global_state_dim=len(global_state),
             action_dim=sim.num_uav,
         )
-        agent = MAPPOAgent(cfg)
+        if args.resume:
+            try:
+                agent = MAPPOAgent.load(args.model_path)
+                print(f"Loaded MARL agent from {args.model_path}")
+            except FileNotFoundError:
+                agent = MAPPOAgent(cfg)
+        else:
+            agent = MAPPOAgent(cfg)
         trainer = MARLTrainer(agent)
         trainer.train(_make_env, episodes=args.episodes)
+        agent.save(args.model_path)
+        print(f"Saved MARL agent to {args.model_path}")
         print("MARL training finished")
     else:
         print("MARL scheduler unavailable")
