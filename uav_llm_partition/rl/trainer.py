@@ -16,6 +16,10 @@ def train_agent(
     """Run a lightweight training loop over simulated episodes."""
 
     for ep in range(episodes):
+        # decay exploration and learning rate over time
+        agent.config.epsilon = max(agent.config.epsilon_min, agent.config.epsilon * agent.config.epsilon_decay)
+        lr = agent.config.lr * (agent.config.lr_decay ** max(ep // 100, 0))
+
         env = env_factory()
         state = env.reset()
         done = False
@@ -25,6 +29,7 @@ def train_agent(
             next_state, reward, done, _ = env.step(action)
             agent.store(env.steps[-1])
             state = next_state
+        agent.config.lr = lr
         agent.update(final_reward=env.reward)
         eval_reward = None
         if deterministic_eval:

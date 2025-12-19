@@ -44,17 +44,50 @@ class PolicyNetwork:
         logits = _dot(x, self.weights[-1], self.biases[-1])
         return _softmax(logits)
 
-    def update(self, states, actions, advantages, lr: float = 1e-3) -> None:
+    def get_log_prob(self, probs: Sequence[float], action: int) -> float:
+        return math.log(max(probs[action], 1e-8))
+
+    def get_action_and_log_prob(
+        self, state: Sequence[float], mask: Sequence[bool] | None = None, deterministic: bool = False
+    ) -> tuple[int, float, float]:
+        probs = self.forward(state)
+        if mask is not None:
+            probs = [p if m else 0.0 for p, m in zip(probs, mask)]
+            total = sum(probs)
+            if total <= 0:
+                probs = [1.0 / len(probs) for _ in probs]
+            else:
+                probs = [p / total for p in probs]
+        entropy = -sum(p * math.log(max(p, 1e-8)) for p in probs)
+        import random
+
+        if deterministic:
+            action = int(max(range(len(probs)), key=lambda i: probs[i]))
+        else:
+            r = random.random()
+            cdf = 0.0
+            action = len(probs) - 1
+            for i, p in enumerate(probs):
+                cdf += p
+                if r <= cdf:
+                    action = i
+                    break
+        return action, self.get_log_prob(probs, action), entropy
+
+    def update(self, states, actions, advantages, lr: float = 1e-3, max_grad_norm: float = 0.5) -> None:
         # Lightweight update: adjust final-layer weights toward actions with positive advantage.
         for state, action, adv in zip(states, actions, advantages):
-            if adv == 0:
+            if abs(adv) < 1e-9:
                 continue
             x = list(state)
             for W, b in zip(self.weights[:-1], self.biases[:-1]):
                 x = _relu(_dot(x, W, b))
+            grad_scale = -adv * lr
+            if abs(grad_scale) > max_grad_norm:
+                grad_scale = max_grad_norm if grad_scale > 0 else -max_grad_norm
             for i, v in enumerate(x):
-                self.weights[-1][i][action] -= lr * (-adv) * v
-            self.biases[-1][action] -= lr * (-adv)
+                self.weights[-1][i][action] -= grad_scale * v
+            self.biases[-1][action] -= grad_scale
 
 
 class ValueNetwork:
@@ -73,7 +106,7 @@ class ValueNetwork:
         out = _dot(x, self.weights[-1], self.biases[-1])[0]
         return out
 
-    def update(self, states, targets, lr: float = 1e-3) -> None:
+    def update(self, states, targets, lr: float = 1e-3, max_grad_norm: float = 0.5) -> None:
         for state, target in zip(states, targets):
             pred = self.forward(state)
             error = pred - target
@@ -81,6 +114,9 @@ class ValueNetwork:
             x = list(state)
             for W, b in zip(self.weights[:-1], self.biases[:-1]):
                 x = _relu(_dot(x, W, b))
+            grad_scale = lr * error
+            if abs(grad_scale) > max_grad_norm:
+                grad_scale = max_grad_norm if grad_scale > 0 else -max_grad_norm
             for i, v in enumerate(x):
-                self.weights[-1][i][0] -= lr * error * v
-            self.biases[-1][0] -= lr * error
+                self.weights[-1][i][0] -= grad_scale * v
+            self.biases[-1][0] -= grad_scale

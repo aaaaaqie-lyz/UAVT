@@ -40,7 +40,7 @@ def main() -> None:
     scheduler: MARLScheduler = sim._create_scheduler("marl", "round_robin")  # type: ignore[attr-defined]
     if scheduler:
         from uav_llm_partition.rl.marl.env import MultiAgentResourceAllocationEnv
-        from uav_llm_partition.rl.marl.mappo import MAPPOAgent
+        from uav_llm_partition.rl.marl.mappo import MAPPOAgent, MAPPOConfig
 
         def _make_env() -> MultiAgentResourceAllocationEnv:
             sim, bandwidth, demands, activation_sizes, weights, compute, memory = _env_factory()
@@ -57,8 +57,14 @@ def main() -> None:
             )
 
         env_sample = _make_env()
-        local_states, _ = env_sample.reset()
-        agent = MAPPOAgent(num_agents=sim.num_uav, local_state_dim=len(local_states[0]), action_dim=sim.num_uav)
+        local_states, global_state = env_sample.reset()
+        cfg = MAPPOConfig(
+            num_agents=sim.num_uav,
+            local_state_dim=len(local_states[0]),
+            global_state_dim=len(global_state),
+            action_dim=sim.num_uav,
+        )
+        agent = MAPPOAgent(cfg)
         trainer = MARLTrainer(agent)
         trainer.train(_make_env, episodes=args.episodes)
         print("MARL training finished")

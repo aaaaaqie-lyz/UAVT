@@ -60,6 +60,11 @@ class MultiAgentResourceAllocationEnv:
         self.block_idx = 0
         return self._get_local_states(), self._get_global_state()
 
+    def current_states(self) -> Tuple[List[List[float]], List[float]]:
+        """Expose current local/global states for learners."""
+
+        return self._get_local_states(), self._get_global_state()
+
     # ------------------------------------------------------------------
     def _feasible(self, block: Block, dev: int) -> Tuple[bool, float]:
         demand = self.demands[block]

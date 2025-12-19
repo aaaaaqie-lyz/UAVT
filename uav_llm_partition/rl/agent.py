@@ -13,8 +13,11 @@ class AgentConfig:
     state_dim: int
     action_dim: int
     gamma: float = 0.99
-    lr: float = 1e-3
+    lr: float = 1e-4
+    lr_decay: float = 0.995
     epsilon: float = 0.1
+    epsilon_decay: float = 0.995
+    epsilon_min: float = 0.01
     baseline: bool = True
 
 
@@ -89,6 +92,12 @@ class RLAgent:
         if self.config.baseline:
             baselines = [self.value.forward(s) for s in states]
             advantages = [ret - base for ret, base in zip(returns, baselines)]
+            # normalize advantages
+            if advantages:
+                mean_adv = sum(advantages) / len(advantages)
+                std_adv = (sum((a - mean_adv) ** 2 for a in advantages) / len(advantages)) ** 0.5
+                if std_adv > 1e-8:
+                    advantages = [(a - mean_adv) / (std_adv + 1e-8) for a in advantages]
             self.value.update(states, returns, lr=self.config.lr)
 
         self.policy.update(states, actions, advantages, lr=self.config.lr)
