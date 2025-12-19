@@ -1,53 +1,67 @@
 """Entry point for running a toy MARL training loop."""
 from __future__ import annotations
 
+import argparse
+
 from uav_llm_partition.controller.scheduler_marl import MARLScheduler
 from uav_llm_partition.rl.marl.trainer import MARLTrainer
 from uav_llm_partition.sim.simulator import Simulator
 
 
 def main() -> None:
-    # Build a simulator with MARL scheduler to expose block lists and demands
-    sim = Simulator(
-        num_uav=4,
-        num_layers=2,
-        num_heads=4,
-        hidden_size=1024,
-        head_dim=None,
-        intervals=1,
-        interval_tokens=6,
-        scheduler_type="marl",
-        use_lyapunov=False,
-    )
-    # Build a single-episode environment from simulator state
-    sim_positions, sim_mob = sim.mobility.update()
-    bandwidth, conn, los_score = sim.channel.compute(sim_positions)
-    compute, memory = sim.resource.sample(sim.num_uav)
-    demands = sim.demand_model.update_interval()
-    activation_sizes = {(u, v): sim.demand_model.activation_size(u, v) for u, v in sim.dependencies}
-    weights = sim.weights.compute(compute, memory, los_score, sim_mob)
+    parser = argparse.ArgumentParser(description="Train multi-agent scheduler")
+    parser.add_argument("--episodes", type=int, default=500, help="number of training episodes")
+    args = parser.parse_args()
 
+    def _env_factory():
+        # Build a simulator with MARL scheduler to expose block lists and demands
+        sim = Simulator(
+            num_uav=4,
+            num_layers=2,
+            num_heads=4,
+            hidden_size=1024,
+            head_dim=None,
+            intervals=1,
+            interval_tokens=6,
+            scheduler_type="marl",
+            use_lyapunov=False,
+        )
+        sim_positions, sim_mob = sim.mobility.update()
+        bandwidth, conn, los_score = sim.channel.compute(sim_positions)
+        compute, memory = sim.resource.sample(sim.num_uav)
+        demands = sim.demand_model.update_interval()
+        activation_sizes = {(u, v): sim.demand_model.activation_size(u, v) for u, v in sim.dependencies}
+        weights = sim.weights.compute(compute, memory, los_score, sim_mob)
+
+        return sim, bandwidth, demands, activation_sizes, weights, compute, memory
+
+    # Initialize a single env to infer dimensions
+    sim, bandwidth, demands, activation_sizes, weights, compute, memory = _env_factory()
     scheduler: MARLScheduler = sim._create_scheduler("marl", "round_robin")  # type: ignore[attr-defined]
     if scheduler:
         from uav_llm_partition.rl.marl.env import MultiAgentResourceAllocationEnv
         from uav_llm_partition.rl.marl.mappo import MAPPOAgent
 
-        env = MultiAgentResourceAllocationEnv(
-            sim.blocks,
-            demands,
-            compute,
-            memory,
-            bandwidth,
-            [0.0 for _ in range(sim.num_uav)],
-            weights,
-            sim.dependencies,
-            activation_sizes,
-        )
-        local_states, _ = env.reset()
+        def _make_env() -> MultiAgentResourceAllocationEnv:
+            sim, bandwidth, demands, activation_sizes, weights, compute, memory = _env_factory()
+            return MultiAgentResourceAllocationEnv(
+                sim.blocks,
+                demands,
+                compute,
+                memory,
+                bandwidth,
+                [0.0 for _ in range(sim.num_uav)],
+                weights,
+                sim.dependencies,
+                activation_sizes,
+            )
+
+        env_sample = _make_env()
+        local_states, _ = env_sample.reset()
         agent = MAPPOAgent(num_agents=sim.num_uav, local_state_dim=len(local_states[0]), action_dim=sim.num_uav)
         trainer = MARLTrainer(agent)
-        trainer.run_episode(env)
-        print("MARL toy episode finished")
+        trainer.train(_make_env, episodes=args.episodes)
+        print("MARL training finished")
     else:
         print("MARL scheduler unavailable")
 

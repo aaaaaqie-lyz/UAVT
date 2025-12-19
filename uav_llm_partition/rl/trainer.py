@@ -10,12 +10,12 @@ from .env import RLResourceAllocationEnv
 def train_agent(
     env_factory: Callable[[], RLResourceAllocationEnv],
     agent: RLAgent,
-    episodes: int = 50,
+    episodes: int = 500,
     deterministic_eval: bool = True,
 ) -> None:
     """Run a lightweight training loop over simulated episodes."""
 
-    for _ in range(episodes):
+    for ep in range(episodes):
         env = env_factory()
         state = env.reset()
         done = False
@@ -26,8 +26,13 @@ def train_agent(
             agent.store(env.steps[-1])
             state = next_state
         agent.update(final_reward=env.reward)
+        eval_reward = None
         if deterministic_eval:
-            _ = evaluate(env_factory, agent)
+            eval_reward = evaluate(env_factory, agent)
+        print(
+            f"Episode {ep + 1}/{episodes}: train_reward={env.reward:.3f}"
+            + (f", eval_reward={eval_reward:.3f}" if eval_reward is not None else "")
+        )
 
 
 def evaluate(env_factory: Callable[[], RLResourceAllocationEnv], agent: RLAgent) -> float:

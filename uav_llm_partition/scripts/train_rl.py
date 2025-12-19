@@ -1,6 +1,8 @@
 """Lightweight entrypoint to train the single-agent RL scheduler prototype."""
 from __future__ import annotations
 
+import argparse
+
 from uav_llm_partition.rl.agent import AgentConfig, RLAgent
 from uav_llm_partition.rl.env import RLResourceAllocationEnv
 from uav_llm_partition.rl.trainer import evaluate, train_agent
@@ -47,14 +49,18 @@ def _env_factory() -> RLResourceAllocationEnv:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Train single-agent RL scheduler")
+    parser.add_argument("--episodes", type=int, default=500, help="number of training episodes")
+    args = parser.parse_args()
+
     # Inspect the state dimensionality from a sample environment
     sample_env = _env_factory()
     sample_state = sample_env.reset()
     config = AgentConfig(state_dim=len(sample_state), action_dim=len(sample_env.compute))
     agent = RLAgent(config)
 
-    # Train for a small number of episodes to validate the loop
-    train_agent(_env_factory, agent, episodes=20)
+    # Train for a larger number of episodes to exercise the loop visibly
+    train_agent(_env_factory, agent, episodes=args.episodes)
 
     # Report a deterministic evaluation reward as a quick sanity check
     eval_reward = evaluate(_env_factory, agent)

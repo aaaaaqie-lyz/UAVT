@@ -1,7 +1,7 @@
 """Stub trainer for multi-agent RL (MAPPO-style)."""
 from __future__ import annotations
 
-from typing import Iterable
+from typing import Callable, Iterable
 
 from .env import MultiAgentResourceAllocationEnv
 from .mappo import MAPPOAgent
@@ -36,9 +36,15 @@ class MARLTrainer:
 
     def train(
         self,
-        env_factory: Iterable[MultiAgentResourceAllocationEnv],
-        episodes: int = 10,
+        env_factory: Iterable[MultiAgentResourceAllocationEnv] | Callable[[], MultiAgentResourceAllocationEnv],
+        episodes: int = 500,
     ) -> None:
-        for _ in range(episodes):
-            for env in env_factory:
-                self.run_episode(env)
+        for ep in range(episodes):
+            if callable(env_factory):
+                envs = [env_factory()]
+            else:
+                envs = list(env_factory)
+            cumulative = 0.0
+            for env in envs:
+                cumulative += self.run_episode(env)
+            print(f"Episode {ep + 1}/{episodes}: total_reward={cumulative:.3f}")
