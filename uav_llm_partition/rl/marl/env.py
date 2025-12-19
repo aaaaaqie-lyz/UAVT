@@ -50,6 +50,10 @@ class MultiAgentResourceAllocationEnv:
         self.load_guard = load_guard
 
         self.num_agents = len(self.compute)
+        self._max_compute = max(self.compute) if self.compute else 1.0
+        self._max_memory = max(self.memory) if self.memory else 1.0
+        self._max_block_compute = max((d.compute for d in self.demands.values()), default=1.0)
+        self._max_block_memory = max((d.memory for d in self.demands.values()), default=1.0)
         self.reset()
 
     # ------------------------------------------------------------------
@@ -134,10 +138,10 @@ class MultiAgentResourceAllocationEnv:
             comp_ratio = self.comp_used[dev] / (self.compute[dev] + 1e-6)
             mem_ratio = self.mem_used[dev] / (self.memory[dev] + 1e-6)
             state = [
-                self.compute[dev],
-                self.memory[dev],
-                self.comp_used[dev],
-                self.mem_used[dev],
+                self.compute[dev] / (self._max_compute + 1e-6),
+                self.memory[dev] / (self._max_memory + 1e-6),
+                self.comp_used[dev] / (self._max_compute + 1e-6),
+                self.mem_used[dev] / (self._max_memory + 1e-6),
                 comp_ratio,
                 mem_ratio,
                 self.lyapunov[dev],
@@ -147,9 +151,9 @@ class MultiAgentResourceAllocationEnv:
                 demand = self.demands[current_block]
                 state.extend(
                     [
-                        demand.compute,
-                        demand.memory,
-                        demand.kv_cache,
+                        demand.compute / (self._max_block_compute + 1e-6),
+                        demand.memory / (self._max_block_memory + 1e-6),
+                        demand.kv_cache / (self._max_block_memory + 1e-6),
                         current_block.layer,
                         1 if current_block.kind == "head" else 0,
                     ]
@@ -162,10 +166,10 @@ class MultiAgentResourceAllocationEnv:
             self.comp_used, self.compute, self.mem_used, self.memory
         )]
         state: List[float] = []
-        state.extend(self.compute)
-        state.extend(self.memory)
-        state.extend(self.comp_used)
-        state.extend(self.mem_used)
+        state.extend([c / (self._max_compute + 1e-6) for c in self.compute])
+        state.extend([m / (self._max_memory + 1e-6) for m in self.memory])
+        state.extend([c / (self._max_compute + 1e-6) for c in self.comp_used])
+        state.extend([m / (self._max_memory + 1e-6) for m in self.mem_used])
         state.extend(loads)
         state.append(sum(loads) / len(loads) if loads else 0.0)
         state.append(max(loads) if loads else 0.0)

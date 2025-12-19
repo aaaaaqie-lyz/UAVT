@@ -16,9 +16,12 @@ def train_agent(
     """Run a lightweight training loop over simulated episodes."""
 
     for ep in range(episodes):
-        # decay exploration and learning rate over time
-        agent.config.epsilon = max(agent.config.epsilon_min, agent.config.epsilon * agent.config.epsilon_decay)
-        lr = agent.config.lr * (agent.config.lr_decay ** max(ep // 100, 0))
+        # decay exploration more aggressively and shrink learning rate every episode
+        agent.config.epsilon = max(
+            agent.config.epsilon_min,
+            agent.config.epsilon * (agent.config.epsilon_decay ** (ep + 1)),
+        )
+        lr = agent.config.lr * (agent.config.lr_decay ** ep)
 
         env = env_factory()
         state = env.reset()

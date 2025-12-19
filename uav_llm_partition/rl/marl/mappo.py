@@ -18,9 +18,10 @@ class MAPPOConfig:
     gae_lambda: float = 0.95
     clip_epsilon: float = 0.2
     value_coef: float = 0.5
-    entropy_coef: float = 0.01
+    entropy_coef: float = 0.05
     lr: float = 3e-4
-    ppo_epochs: int = 4
+    value_lr_scale: float = 0.25
+    ppo_epochs: int = 6
     max_grad_norm: float = 0.5
 
 
@@ -43,6 +44,15 @@ class MAPPOAgent:
         entropies: List[float] = []
         for agent_id, state in enumerate(local_states):
             action, log_prob, entropy = self.actors[agent_id].get_action_and_log_prob(state, action_mask, deterministic)
+            # If entropy collapses, inject a small amount of randomness to keep exploration alive
+            if entropy < 0.05 and not deterministic:
+                import random
+
+                feasible = [i for i, ok in enumerate(action_mask) if ok]
+                if feasible:
+                    action = int(random.choice(feasible))
+                    log_prob = -math.log(len(feasible))
+                    entropy = 0.5
             actions.append(action)
             log_probs.append(log_prob)
             entropies.append(entropy)
@@ -80,8 +90,15 @@ class MAPPOAgent:
         if not rewards:
             return {"policy_loss": 0.0, "value_loss": 0.0, "entropy": 0.0}
 
+        # normalize rewards to avoid exploding returns
+        mean_r = sum(rewards) / max(len(rewards), 1)
+        std_r = math.sqrt(sum((r - mean_r) ** 2 for r in rewards) / max(len(rewards), 1))
+        if std_r > 1e-6:
+            rewards = [(r - mean_r) / (std_r + 1e-6) for r in rewards]
+
         values = [self.value(gs) for gs in global_states]
         advantages, returns = self._compute_gae(rewards, values, dones)
+        returns = [max(min(ret, 10.0), -10.0) for ret in returns]
         # advantage normalization
         mean_adv = sum(advantages) / max(len(advantages), 1)
         std_adv = math.sqrt(sum((a - mean_adv) ** 2 for a in advantages) / max(len(advantages), 1))
@@ -106,8 +123,9 @@ class MAPPOAgent:
                     ratio = math.exp(new_log_prob - old_log_probs[step_idx][agent_id])
                     surr1 = ratio * adv
                     surr2 = max(1.0 - self.cfg.clip_epsilon, min(1.0 + self.cfg.clip_epsilon, ratio)) * adv
-                    policy_loss += -min(surr1, surr2)
-                    entropy_acc += -sum(p * math.log(max(p, 1e-8)) for p in probs)
+                    entropy_term = -sum(p * math.log(max(p, 1e-8)) for p in probs)
+                    policy_loss += -min(surr1, surr2) - self.cfg.entropy_coef * entropy_term
+                    entropy_acc += entropy_term
 
                 # value update once per timestep using global critic
                 v_pred = self.value(global_states[step_idx])
@@ -119,7 +137,7 @@ class MAPPOAgent:
             flat_advs = [advantages[i] for i in range(len(advantages)) for _ in range(len(self.actors))]
             for actor in self.actors:
                 actor.update(flat_states[: len(actions) * len(self.actors)], flat_actions, flat_advs, lr=self.cfg.lr)
-            self.critic.update(global_states, returns, lr=self.cfg.lr)
+            self.critic.update(global_states, returns, lr=self.cfg.lr * self.cfg.value_lr_scale)
 
             steps_count = max(len(states), 1)
             total_policy_loss += policy_loss / steps_count

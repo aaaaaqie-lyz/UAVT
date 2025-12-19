@@ -200,8 +200,25 @@ class RLResourceAllocationEnv:
         if done:
             reward = self._final_reward()
             self.reward = reward
+        else:
+            reward = self._intermediate_reward()
         self.steps.append(RLStep(self._state(), action, reward, done))
         return self._state(), reward, done, {}
+
+    def _intermediate_reward(self) -> float:
+        """Provide dense feedback to stabilize REINFORCE training."""
+
+        avg_load, max_load, imbalance = self._global_stats()
+        reward = 0.0
+        if imbalance < 0.1:
+            reward += 0.1
+        if max_load < 0.8:
+            reward += 0.05
+        if max_load > 1.0:
+            reward -= 0.2
+        reward -= 0.05 * imbalance
+        reward += 0.05 * min(avg_load, 0.8)
+        return reward
 
     def _final_reward(self) -> float:
         avg_load, max_load, imbalance = self._global_stats()
