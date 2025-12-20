@@ -54,6 +54,8 @@ class MARLScheduler:
             dependencies=dependencies,
             activation_sizes=activation_sizes,
             load_guard=self.load_guard,
+            prev_assignment=prev_assignment,
+            migration_overhead=self.mig_overhead,
         )
         local_states, _ = env.reset()
         self._ensure_agent(num_agents=len(compute), local_state_dim=len(local_states[0]) if local_states else 1)

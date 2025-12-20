@@ -37,6 +37,8 @@ class MultiAgentResourceAllocationEnv:
         dependencies: Sequence[Tuple[Block, Block]],
         activation_sizes: Dict[Tuple[Block, Block], float],
         load_guard: float = 1.0,
+        prev_assignment: Optional[Dict[Block, int]] = None,
+        migration_overhead: float = 0.01,
     ) -> None:
         self.blocks = list(blocks)
         self.demands = demands
@@ -48,6 +50,15 @@ class MultiAgentResourceAllocationEnv:
         self.dependencies = list(dependencies)
         self.activation_sizes = activation_sizes
         self.load_guard = load_guard
+        self.prev_assignment = prev_assignment or {}
+        self.migration_overhead = migration_overhead
+
+        # Reward/penalty knobs
+        self.migration_penalty_scale = 0.1
+        self.comm_penalty_scale = 0.1
+        self.comp_penalty_scale = 0.05
+        self.stability_bonus = 0.2
+        self.stability_margin = 0.05
 
         self.num_agents = len(self.compute)
         self._max_compute = max(self.compute) if self.compute else 1.0
@@ -77,6 +88,12 @@ class MultiAgentResourceAllocationEnv:
         compute_ratio = comp_future / (self.compute[dev] + 1e-6)
         memory_ratio = mem_future / (self.memory[dev] + 1e-6)
 
+        comm_ratio = self._comm_delay(block, dev)
+        score = max(compute_ratio, memory_ratio, comm_ratio)
+        feasible = score <= self.load_guard
+        return feasible, score
+
+    def _comm_delay(self, block: Block, dev: int) -> float:
         comm_ratio = 0.0
         for up, down in self.dependencies:
             if up == block and down in self.assignment:
@@ -89,22 +106,42 @@ class MultiAgentResourceAllocationEnv:
                 if src != dev:
                     size = self.activation_sizes.get((up, down), 0.0)
                     comm_ratio += size / (self.bandwidth[src][dev] + 1e-6)
-        score = max(compute_ratio, memory_ratio, comm_ratio)
-        feasible = score <= self.load_guard
-        return feasible, score
+        return comm_ratio
+
+    def _migration_cost(self, block: Block, dev: int) -> float:
+        prev = self.prev_assignment.get(block)
+        if prev is None or prev == dev:
+            return 0.0
+        kv = self.demands[block].kv_cache
+        rate = self.bandwidth[prev][dev] + 1e-6
+        return kv / rate + self.migration_overhead
 
     def _choose_device(self, block: Block, bids: Sequence[float]) -> Tuple[Optional[int], Dict[int, float]]:
         scores: Dict[int, float] = {}
+        prev_dev = self.prev_assignment.get(block)
+        prev_score = None
         for dev in range(self.num_agents):
-            feasible, score = self._feasible(block, dev)
+            feasible, base_score = self._feasible(block, dev)
             if not feasible:
                 continue
-            # Lyapunov penalty discourages high backlog
-            score = score * (1.0 + self.lyapunov[dev]) - bids[dev]
+            mig_cost = self._migration_cost(block, dev)
+            comm_delay = self._comm_delay(block, dev)
+            # Lyapunov and migration act as penalties; bids reward willingness
+            score = base_score * (1.0 + self.lyapunov[dev])
+            score += self.migration_penalty_scale * mig_cost
+            score += self.comm_penalty_scale * comm_delay
+            score -= bids[dev]
             scores[dev] = score
+            if prev_dev is not None and dev == prev_dev:
+                prev_score = score - self.stability_margin  # make previous slightly more attractive
         if not scores:
             return None, scores
-        return min(scores, key=scores.get), scores
+        best_dev = min(scores, key=scores.get)
+        # Sticky preference: keep previous assignment if comparable
+        if prev_dev is not None and prev_score is not None:
+            if prev_dev in scores and scores.get(best_dev, 1e9) >= prev_score:
+                best_dev = prev_dev
+        return best_dev, scores
 
     def step(self, bids: Sequence[float]) -> EnvStep:
         if self.block_idx >= len(self.blocks):
@@ -119,7 +156,19 @@ class MultiAgentResourceAllocationEnv:
             demand = self.demands[block]
             self.comp_used[device] += demand.compute
             self.mem_used[device] += demand.memory
-            rewards[device] += 1.0 - min(score_map.get(device, 0.0), 1.0)
+            comp_delay = demand.compute / (self.compute[device] + 1e-6)
+            comm_delay = self._comm_delay(block, device)
+            mig_cost = self._migration_cost(block, device)
+            stick_bonus = 0.0
+            if block in self.prev_assignment and self.prev_assignment[block] == device:
+                stick_bonus = self.stability_bonus
+            rewards[device] = (
+                1.0 - min(score_map.get(device, 0.0), 1.0)
+                - self.comm_penalty_scale * comm_delay
+                - self.comp_penalty_scale * comp_delay
+                - self.migration_penalty_scale * mig_cost
+                + stick_bonus
+            )
         else:
             # penalize everyone if no one could take the block
             rewards = [-0.5 for _ in range(self.num_agents)]
@@ -137,6 +186,7 @@ class MultiAgentResourceAllocationEnv:
         for dev in range(self.num_agents):
             comp_ratio = self.comp_used[dev] / (self.compute[dev] + 1e-6)
             mem_ratio = self.mem_used[dev] / (self.memory[dev] + 1e-6)
+            comm_cost = 0.0
             state = [
                 self.compute[dev] / (self._max_compute + 1e-6),
                 self.memory[dev] / (self._max_memory + 1e-6),
@@ -149,6 +199,8 @@ class MultiAgentResourceAllocationEnv:
             ]
             if current_block:
                 demand = self.demands[current_block]
+                comm_cost = self._comm_delay(current_block, dev)
+                mig_cost = self._migration_cost(current_block, dev)
                 state.extend(
                     [
                         demand.compute / (self._max_block_compute + 1e-6),
@@ -156,6 +208,9 @@ class MultiAgentResourceAllocationEnv:
                         demand.kv_cache / (self._max_block_memory + 1e-6),
                         current_block.layer,
                         1 if current_block.kind == "head" else 0,
+                        comm_cost,
+                        mig_cost,
+                        1.0 if self.prev_assignment.get(current_block) == dev else 0.0,
                     ]
                 )
             states.append(state)

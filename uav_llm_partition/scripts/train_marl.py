@@ -60,6 +60,8 @@ def main() -> None:
                 weights,
                 sim.dependencies,
                 activation_sizes,
+                prev_assignment={},
+                migration_overhead=scheduler.mig_overhead,
             )
 
         env_sample = _make_env()
