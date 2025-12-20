@@ -12,10 +12,11 @@ from .scheduler_baselines import SchedulerResult
 
 
 class MARLScheduler:
-    def __init__(self, load_guard: float = 1.0, model_path: str | None = None) -> None:
+    def __init__(self, load_guard: float = 1.0, model_path: str | None = None, mig_overhead: float = 0.01) -> None:
         self.load_guard = load_guard
         self.agent: MAPPOAgent | None = None
         self.model_path = model_path
+        self.mig_overhead = mig_overhead
 
     def _ensure_agent(self, num_agents: int, local_state_dim: int) -> None:
         if self.agent is not None:

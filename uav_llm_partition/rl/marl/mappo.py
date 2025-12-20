@@ -59,6 +59,24 @@ class MAPPOAgent:
         avg_entropy = sum(entropies) / max(len(entropies), 1)
         return actions, log_probs, avg_entropy
 
+    def select_bids(
+        self,
+        local_states: Sequence[Sequence[float]],
+        action_mask: Sequence[bool],
+        deterministic: bool = True,
+    ) -> List[float]:
+        """Return normalized bids in [0, 1] based on per-agent actions.
+
+        This mirrors the MARL scheduler expectation where each agent outputs a
+        scalar bid; we reuse the discrete device selection probabilities as
+        bids to keep behaviour aligned with ``select_actions`` while allowing
+        deterministic inference for rollout.
+        """
+
+        actions, _, _ = self.select_actions(local_states, action_mask, deterministic)
+        max_action = max(self.cfg.action_dim - 1, 1)
+        return [min(max(float(a) / max_action, 0.0), 1.0) for a in actions]
+
     def value(self, global_state: Sequence[float]) -> float:
         return self.critic.forward(global_state)
 

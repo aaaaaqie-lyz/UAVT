@@ -102,19 +102,53 @@ class PolicyNetwork:
         return action, self.get_log_prob(probs, action), entropy
 
     def update(self, states, actions, advantages, lr: float = 1e-3, max_grad_norm: float = 0.5) -> None:
-        # Lightweight update: adjust final-layer weights toward actions with positive advantage.
+        """Backpropagate a simple policy-gradient style update through all layers."""
+
         for state, action, adv in zip(states, actions, advantages):
             if abs(adv) < 1e-9:
                 continue
-            x = list(state)
+            # forward pass with cached activations
+            activations = [list(state)]
+            zs = []
             for W, b in zip(self.weights[:-1], self.biases[:-1]):
-                x = _relu(_dot(x, W, b))
-            grad_scale = -adv * lr
-            if abs(grad_scale) > max_grad_norm:
-                grad_scale = max_grad_norm if grad_scale > 0 else -max_grad_norm
-            for i, v in enumerate(x):
-                self.weights[-1][i][action] -= grad_scale * v
-            self.biases[-1][action] -= grad_scale
+                z = _dot(activations[-1], W, b)
+                zs.append(z)
+                activations.append(_relu(z))
+            logits = _dot(activations[-1], self.weights[-1], self.biases[-1])
+            probs = _softmax(logits)
+
+            # gradient of log-prob wrt logits
+            grad_logits = [p for p in probs]
+            grad_logits[action] -= 1.0
+            grad_logits = [g * adv for g in grad_logits]
+
+            # backprop output layer
+            grad_w_last = [[a * g for g in grad_logits] for a in activations[-1]]
+            grad_b_last = list(grad_logits)
+
+            # backprop hidden layers (ReLU)
+            grad_prev = [sum(self.weights[-1][i][j] * grad_logits[j] for j in range(len(grad_logits))) for i in range(len(self.weights[-1]))]
+            for layer in reversed(range(len(self.weights) - 1)):
+                z = zs[layer]
+                relu_mask = [1.0 if v > 0 else 0.0 for v in z]
+                grad_prev = [g * m for g, m in zip(grad_prev, relu_mask)]
+                grad_w = [[activations[layer][i] * grad_prev[j] for j in range(len(grad_prev))] for i in range(len(activations[layer]))]
+                grad_b = list(grad_prev)
+                # apply gradients
+                for i in range(len(self.weights[layer])):
+                    for j in range(len(self.weights[layer][i])):
+                        self.weights[layer][i][j] -= lr * grad_w[i][j]
+                for j in range(len(self.biases[layer])):
+                    self.biases[layer][j] -= lr * grad_b[j]
+                if layer > 0:
+                    grad_prev = [sum(self.weights[layer][i][k] * grad_prev[k] for k in range(len(grad_prev))) for i in range(len(self.weights[layer]))]
+
+            # apply output gradients
+            for i in range(len(self.weights[-1])):
+                for j in range(len(self.weights[-1][i])):
+                    self.weights[-1][i][j] -= lr * grad_w_last[i][j]
+            for j in range(len(self.biases[-1])):
+                self.biases[-1][j] -= lr * grad_b_last[j]
 
 
 class ValueNetwork:
@@ -161,16 +195,42 @@ class ValueNetwork:
         return cls.from_dict(data)
 
     def update(self, states, targets, lr: float = 1e-3, max_grad_norm: float = 0.5) -> None:
+        """Backprop a mean-squared loss update through all layers."""
+
         for state, target in zip(states, targets):
-            pred = self.forward(state)
-            error = pred - target
-            # Update final layer only
-            x = list(state)
+            # forward with caches
+            activations = [list(state)]
+            zs = []
             for W, b in zip(self.weights[:-1], self.biases[:-1]):
-                x = _relu(_dot(x, W, b))
-            grad_scale = lr * error
-            if abs(grad_scale) > max_grad_norm:
-                grad_scale = max_grad_norm if grad_scale > 0 else -max_grad_norm
-            for i, v in enumerate(x):
-                self.weights[-1][i][0] -= grad_scale * v
-            self.biases[-1][0] -= grad_scale
+                z = _dot(activations[-1], W, b)
+                zs.append(z)
+                activations.append(_relu(z))
+            pred = _dot(activations[-1], self.weights[-1], self.biases[-1])[0]
+            error = pred - target
+
+            # gradient clipping on scalar error
+            error = max(min(error, max_grad_norm), -max_grad_norm)
+
+            # backprop output layer
+            grad_out = [error]
+            grad_w_last = [[activations[-1][i] * grad_out[0]] for i in range(len(activations[-1]))]
+            grad_b_last = list(grad_out)
+
+            grad_prev = [self.weights[-1][i][0] * grad_out[0] for i in range(len(self.weights[-1]))]
+            for layer in reversed(range(len(self.weights) - 1)):
+                z = zs[layer]
+                relu_mask = [1.0 if v > 0 else 0.0 for v in z]
+                grad_prev = [g * m for g, m in zip(grad_prev, relu_mask)]
+                grad_w = [[activations[layer][i] * grad_prev[j] for j in range(len(grad_prev))] for i in range(len(activations[layer]))]
+                grad_b = list(grad_prev)
+                for i in range(len(self.weights[layer])):
+                    for j in range(len(self.weights[layer][i])):
+                        self.weights[layer][i][j] -= lr * grad_w[i][j]
+                for j in range(len(self.biases[layer])):
+                    self.biases[layer][j] -= lr * grad_b[j]
+                if layer > 0:
+                    grad_prev = [sum(self.weights[layer][i][k] * grad_prev[k] for k in range(len(grad_prev))) for i in range(len(self.weights[layer]))]
+
+            for i in range(len(self.weights[-1])):
+                self.weights[-1][i][0] -= lr * grad_w_last[i][0]
+            self.biases[-1][0] -= lr * grad_b_last[0]

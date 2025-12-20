@@ -105,7 +105,11 @@ class Simulator:
         positions, mobility_risk = self.mobility.update()
         bandwidth, conn, los_score = self.channel.compute(positions)
         compute, memory = self.resource.sample(self.num_uav)
-        weights = self.weights.compute(compute, memory, los_score, mobility_risk)
+        system_state = {
+            "is_compute_bound": min(compute) < 0.8 * (sum(compute) / max(len(compute), 1)),
+            "is_memory_bound": min(memory) < 0.8 * (sum(memory) / max(len(memory), 1)),
+        }
+        weights = self.weights.compute(compute, memory, los_score, mobility_risk, system_state=system_state)
         lyapunov = self.lyapunov.pressure() if self.use_lyapunov and self.lyapunov_mode != "none" else [0.0] * self.num_uav
         rl_params = self.rl_param.get()
         if isinstance(self.scheduler, SchedulerHeuristic):
@@ -294,6 +298,8 @@ class Simulator:
         delay = 0.0
         per_device = [0.0 for _ in range(self.num_uav)]
         for upstream, downstream in self.dependencies:
+            if upstream not in assignment or downstream not in assignment:
+                continue
             dev_u = assignment[upstream]
             dev_d = assignment[downstream]
             if dev_u != dev_d:
