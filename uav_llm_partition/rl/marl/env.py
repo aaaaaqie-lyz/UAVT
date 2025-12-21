@@ -63,9 +63,9 @@ class MultiAgentResourceAllocationEnv:
         self.migration_penalty_scale = 0.1
         self.comm_penalty_scale = 0.1
         self.comp_penalty_scale = 0.05
-        self.bid_weight = 0.5
-        self.stability_bonus = 0.05
-        self.stability_margin = 0.05
+        self.bid_weight = 2.0
+        self.stability_bonus = 0.01
+        self.stability_margin = 0.01
         self.queue_decay = 0.02
         self.queue_cap = 5.0
 
@@ -248,7 +248,7 @@ class MultiAgentResourceAllocationEnv:
             )
             self._update_queue(device, load_ratio)
             queue_penalty = min(self.queue[device] / self.queue_cap, 1.0)
-            team_reward = (
+            raw_reward = (
                 1.0
                 - min(score_map.get(device, 0.0), 1.0)
                 - self.comm_penalty_scale * comm_delay
@@ -257,7 +257,8 @@ class MultiAgentResourceAllocationEnv:
                 - queue_penalty
                 + stick_bonus
             )
-            team_reward = max(min(team_reward, 1.0), -1.0)
+            # amplify to avoid near-zero signals then clip for stability
+            team_reward = max(min(raw_reward * 4.0, 1.0), -1.0)
             rewards = [team_reward for _ in range(self.num_agents)]
         else:
             # penalize everyone if no one could take the block

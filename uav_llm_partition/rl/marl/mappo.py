@@ -143,7 +143,7 @@ class MAPPOAgent:
                         clipped_ratio = max(1.0 - self.cfg.clip_epsilon, min(1.0 + self.cfg.clip_epsilon, ratio))
                         surr1 = ratio * adv
                         surr2 = clipped_ratio * adv
-                        surrogate = min(surr1, surr2)
+                        surrogate = min(surr1, surr2) if adv >= 0 else max(surr1, surr2)
                         entropy_term = actor._entropy()
                         policy_loss += -surrogate - self.cfg.entropy_coef * entropy_term
                         entropy_acc += entropy_term

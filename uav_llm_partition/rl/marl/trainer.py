@@ -36,17 +36,21 @@ class MARLTrainer:
         steps = 0
         while True:
             bids, log_probs, _ = self.agent.select_bids(local_states)
+            mask = env.action_mask()
             step = env.step(bids)
             total_reward += step.team_reward
 
             self.buffer.add(
                 local_states=local_states,
                 global_state=global_state,
+                next_local_states=step.next_local_states,
+                next_global_state=step.next_global_state,
                 log_probs=log_probs,
                 bids=bids,
                 value=self.agent.value(global_state),
                 reward=step.team_reward,
                 rewards_by_agent=step.rewards,
+                action_mask=mask,
                 done=step.done,
             )
 
@@ -63,8 +67,8 @@ class MARLTrainer:
         self,
         env_factory: Iterable[MultiAgentResourceAllocationEnv] | Callable[[], MultiAgentResourceAllocationEnv],
         episodes: int = 500,
-        update_every: int = 8,
-        parallel_envs: int = 4,
+        update_every: int = 4,
+        parallel_envs: int = 8,
     ) -> None:
         rollout_counter = 0
         for ep in range(episodes):
