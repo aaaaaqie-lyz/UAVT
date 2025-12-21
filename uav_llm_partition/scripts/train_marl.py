@@ -46,7 +46,7 @@ def main() -> None:
     scheduler: MARLScheduler = sim._create_scheduler("marl", "round_robin")  # type: ignore[attr-defined]
     if scheduler:
         from uav_llm_partition.rl.marl.env import MultiAgentResourceAllocationEnv
-        from uav_llm_partition.rl.marl.mappo import MAPPOAgent, MAPPOConfig
+        from uav_llm_partition.rl.marl.mappo import MAPPOAgent
 
         def _make_env() -> MultiAgentResourceAllocationEnv:
             sim, bandwidth, demands, activation_sizes, weights, compute, memory = _env_factory()
@@ -66,11 +66,10 @@ def main() -> None:
 
         env_sample = _make_env()
         local_states, global_state = env_sample.reset()
-        cfg = MAPPOConfig(
+        cfg = MAPPOAgent.default_config(
             num_agents=sim.num_uav,
             local_state_dim=len(local_states[0]),
             global_state_dim=len(global_state),
-            action_dim=sim.num_uav,
         )
         if args.resume:
             try:

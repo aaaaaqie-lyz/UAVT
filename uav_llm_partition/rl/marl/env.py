@@ -53,6 +53,9 @@ class MultiAgentResourceAllocationEnv:
         self.prev_assignment = prev_assignment or {}
         self.migration_overhead = migration_overhead
 
+        # Expected dimensions (base features + block features)
+        self.local_state_dim = 16
+
         # Reward/penalty knobs
         self.migration_penalty_scale = 0.1
         self.comm_penalty_scale = 0.1
@@ -65,6 +68,7 @@ class MultiAgentResourceAllocationEnv:
         self._max_memory = max(self.memory) if self.memory else 1.0
         self._max_block_compute = max((d.compute for d in self.demands.values()), default=1.0)
         self._max_block_memory = max((d.memory for d in self.demands.values()), default=1.0)
+        self.global_state_dim = 5 * self.num_agents + 2
         self.reset()
 
     # ------------------------------------------------------------------
@@ -269,6 +273,9 @@ class MultiAgentResourceAllocationEnv:
                         1.0 if self.prev_assignment.get(current_block) == dev else 0.0,
                     ]
                 )
+            else:
+                state.extend([0.0 for _ in range(8)])
+            assert len(state) == self.local_state_dim, f"local state dim mismatch {len(state)} != {self.local_state_dim}"
             states.append(state)
         return states
 
@@ -284,6 +291,8 @@ class MultiAgentResourceAllocationEnv:
         state.extend(loads)
         state.append(sum(loads) / len(loads) if loads else 0.0)
         state.append(max(loads) if loads else 0.0)
+        expected = 5 * self.num_agents + 2
+        assert len(state) == expected, f"global state dim mismatch {len(state)} != {expected}"
         return state
 
     def action_mask(self) -> List[bool]:

@@ -28,6 +28,8 @@ class MAPPOConfig:
 class MAPPOAgent:
     """Simplified MAPPO actor-critic collection with per-agent actors."""
 
+    BID_LEVELS: Sequence[float] = (0.0, 0.25, 0.5, 0.75, 1.0)
+
     def __init__(self, config: MAPPOConfig) -> None:
         self.cfg = config
         self.actors = [
@@ -37,31 +39,31 @@ class MAPPOAgent:
         self.critic = ValueNetwork(config.global_state_dim, hidden_dims=(64, 32))
 
     @staticmethod
-    def default_config(num_agents: int, local_state_dim: int, global_state_dim: int, action_dim: int) -> MAPPOConfig:
+    def default_config(num_agents: int, local_state_dim: int, global_state_dim: int) -> MAPPOConfig:
         return MAPPOConfig(
             num_agents=num_agents,
             local_state_dim=local_state_dim,
             global_state_dim=global_state_dim,
-            action_dim=action_dim,
+            action_dim=len(MAPPOAgent.BID_LEVELS),
         )
 
     def select_actions(
-        self, local_states: Sequence[Sequence[float]], action_mask: Sequence[bool], deterministic: bool = False
+        self, local_states: Sequence[Sequence[float]], deterministic: bool = False
     ) -> tuple[List[int], List[float], float]:
         actions: List[int] = []
         log_probs: List[float] = []
         entropies: List[float] = []
         for agent_id, state in enumerate(local_states):
-            action, log_prob, entropy = self.actors[agent_id].get_action_and_log_prob(state, action_mask, deterministic)
+            action, log_prob, entropy = self.actors[agent_id].get_action_and_log_prob(
+                state, mask=None, deterministic=deterministic
+            )
             # If entropy collapses, inject a small amount of randomness to keep exploration alive
             if entropy < 0.05 and not deterministic:
                 import random
 
-                feasible = [i for i, ok in enumerate(action_mask) if ok]
-                if feasible:
-                    action = int(random.choice(feasible))
-                    log_prob = -math.log(len(feasible))
-                    entropy = 0.5
+                action = random.randrange(self.cfg.action_dim)
+                log_prob = -math.log(self.cfg.action_dim)
+                entropy = 0.5
             actions.append(action)
             log_probs.append(log_prob)
             entropies.append(entropy)
@@ -71,20 +73,16 @@ class MAPPOAgent:
     def select_bids(
         self,
         local_states: Sequence[Sequence[float]],
-        action_mask: Sequence[bool],
         deterministic: bool = True,
     ) -> List[float]:
-        """Return normalized bids in [0, 1] based on per-agent actions.
+        """Map discrete bid levels to normalized bids for each agent."""
 
-        This mirrors the MARL scheduler expectation where each agent outputs a
-        scalar bid; we reuse the discrete device selection probabilities as
-        bids to keep behaviour aligned with ``select_actions`` while allowing
-        deterministic inference for rollout.
-        """
-
-        actions, _, _ = self.select_actions(local_states, action_mask, deterministic)
-        max_action = max(self.cfg.action_dim - 1, 1)
-        return [min(max(float(a) / max_action, 0.0), 1.0) for a in actions]
+        actions, _, _ = self.select_actions(local_states, deterministic)
+        bids: List[float] = []
+        for action in actions:
+            level_idx = max(0, min(int(action), len(self.BID_LEVELS) - 1))
+            bids.append(float(self.BID_LEVELS[level_idx]))
+        return bids
 
     def value(self, global_state: Sequence[float]) -> float:
         return self.critic.forward(global_state)
@@ -107,7 +105,7 @@ class MAPPOAgent:
 
     def learn(
         self,
-        states: List[List[float]],
+        states: List[List[List[float]]],
         global_states: List[List[float]],
         actions: List[List[int]],
         old_log_probs: List[List[float]],
@@ -125,7 +123,9 @@ class MAPPOAgent:
 
         values = [self.value(gs) for gs in global_states]
         advantages, returns = self._compute_gae(rewards, values, dones)
+        # clip returns to keep critic stable
         returns = [max(min(ret, 10.0), -10.0) for ret in returns]
+
         # advantage normalization
         mean_adv = sum(advantages) / max(len(advantages), 1)
         std_adv = math.sqrt(sum((a - mean_adv) ** 2 for a in advantages) / max(len(advantages), 1))
@@ -135,35 +135,40 @@ class MAPPOAgent:
         total_policy_loss = 0.0
         total_value_loss = 0.0
         total_entropy = 0.0
+        # build per-agent training buffers aligned with time dimension
+        per_agent_states: List[List[List[float]]] = [list() for _ in range(self.cfg.num_agents)]
+        per_agent_actions: List[List[int]] = [list() for _ in range(self.cfg.num_agents)]
+        per_agent_advs: List[List[float]] = [list() for _ in range(self.cfg.num_agents)]
+
         for _ in range(self.cfg.ppo_epochs):
             policy_loss = 0.0
             value_loss = 0.0
             entropy_acc = 0.0
-            for step_idx in range(len(states)):
+            for step_idx, step_states in enumerate(states):
                 adv = advantages[step_idx]
                 ret = returns[step_idx]
-                # policy update per agent
                 for agent_id, actor in enumerate(self.actors):
                     action = actions[step_idx][agent_id]
-                    probs = actor.forward(states[step_idx][agent_id])
+                    probs = actor.forward(step_states[agent_id])
                     new_log_prob = actor.get_log_prob(probs, action)
                     ratio = math.exp(new_log_prob - old_log_probs[step_idx][agent_id])
-                    surr1 = ratio * adv
-                    surr2 = max(1.0 - self.cfg.clip_epsilon, min(1.0 + self.cfg.clip_epsilon, ratio)) * adv
+                    clipped_ratio = max(1.0 - self.cfg.clip_epsilon, min(1.0 + self.cfg.clip_epsilon, ratio))
+                    effective_adv = clipped_ratio * adv
                     entropy_term = -sum(p * math.log(max(p, 1e-8)) for p in probs)
-                    policy_loss += -min(surr1, surr2) - self.cfg.entropy_coef * entropy_term
+                    policy_loss += -min(ratio * adv, effective_adv) - self.cfg.entropy_coef * entropy_term
                     entropy_acc += entropy_term
+                    per_agent_states[agent_id].append(step_states[agent_id])
+                    per_agent_actions[agent_id].append(action)
+                    per_agent_advs[agent_id].append(effective_adv)
 
-                # value update once per timestep using global critic
                 v_pred = self.value(global_states[step_idx])
                 value_loss += (v_pred - ret) ** 2
 
-            # apply lightweight updates
-            flat_states = [s for per_agent in states for s in per_agent]
-            flat_actions = [a for per_agent_actions in actions for a in per_agent_actions]
-            flat_advs = [advantages[i] for i in range(len(advantages)) for _ in range(len(self.actors))]
-            for actor in self.actors:
-                actor.update(flat_states[: len(actions) * len(self.actors)], flat_actions, flat_advs, lr=self.cfg.lr)
+            for agent_id, actor in enumerate(self.actors):
+                actor.update(per_agent_states[agent_id], per_agent_actions[agent_id], per_agent_advs[agent_id], lr=self.cfg.lr)
+                per_agent_states[agent_id].clear()
+                per_agent_actions[agent_id].clear()
+                per_agent_advs[agent_id].clear()
             self.critic.update(global_states, returns, lr=self.cfg.lr * self.cfg.value_lr_scale)
 
             steps_count = max(len(states), 1)
@@ -201,6 +206,10 @@ class MAPPOAgent:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         cfg = MAPPOConfig(**data["config"])
+        if cfg.action_dim != len(cls.BID_LEVELS):
+            raise ValueError(
+                f"Loaded MAPPO action_dim {cfg.action_dim} does not match bid levels {len(cls.BID_LEVELS)}"
+            )
         agent = cls(cfg)
         actors = [PolicyNetwork.from_dict(p) for p in data.get("actors", [])]
         if len(actors) != cfg.num_agents:

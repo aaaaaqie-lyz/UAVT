@@ -11,7 +11,6 @@ class MAPPOTransition:
     global_state: List[float]
     actions: List[int]
     log_probs: List[float]
-    value: float
     rewards: List[float]
     done: bool
 
@@ -26,7 +25,6 @@ class MAPPOBuffer:
         global_state: List[float],
         actions: Sequence[int],
         log_probs: Sequence[float],
-        value: float,
         rewards: Sequence[float],
         done: bool,
     ) -> None:
@@ -36,7 +34,6 @@ class MAPPOBuffer:
                 global_state=list(global_state),
                 actions=list(actions),
                 log_probs=list(log_probs),
-                value=value,
                 rewards=list(rewards),
                 done=done,
             )

@@ -21,13 +21,23 @@ class MARLTrainer:
         """Roll out one episode, populate buffer, and return cumulative reward."""
 
         local_states, global_state = env.reset()
+        if local_states and (
+            len(local_states[0]) != self.agent.cfg.local_state_dim
+            or len(global_state) != self.agent.cfg.global_state_dim
+            or len(local_states) != self.agent.cfg.num_agents
+        ):
+            raise ValueError(
+                "MARL trainer state dimensions mismatch: agent cfg="
+                f"(agents={self.agent.cfg.num_agents}, local={self.agent.cfg.local_state_dim}, global={self.agent.cfg.global_state_dim})"
+                f" env=(agents={len(local_states)}, local={len(local_states[0]) if local_states else 0}, global={len(global_state)})"
+            )
+
         total_reward = 0.0
         steps = 0
         self.buffer.clear()
         while True:
-            mask = env.action_mask()
-            actions, log_probs, _ = self.agent.select_actions(local_states, mask)
-            bids = [a / max(self.agent.cfg.action_dim - 1, 1) for a in actions]
+            actions, log_probs, _ = self.agent.select_actions(local_states)
+            bids = self.agent.select_bids(local_states)
             step = env.step(bids)
             total_reward += sum(step.rewards)
 
@@ -36,7 +46,6 @@ class MARLTrainer:
                 global_state=global_state,
                 actions=actions,
                 log_probs=log_probs,
-                value=self.agent.value(global_state),
                 rewards=step.rewards,
                 done=step.done,
             )
