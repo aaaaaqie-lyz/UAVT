@@ -63,14 +63,16 @@ class MultiAgentResourceAllocationEnv:
         self.migration_penalty_scale = 0.1
         self.comm_penalty_scale = 0.1
         self.comp_penalty_scale = 0.05
-        self.stability_bonus = 0.2
+        self.stability_bonus = 0.05
         self.stability_margin = 0.05
+        self.queue_decay = 0.02
 
         self.num_agents = len(self.compute)
         self._max_compute = max(self.compute) if self.compute else 1.0
         self._max_memory = max(self.memory) if self.memory else 1.0
         self._max_block_compute = max((d.compute for d in self.demands.values()), default=1.0)
         self._max_block_memory = max((d.memory for d in self.demands.values()), default=1.0)
+        self._max_kv = max((d.kv_cache for d in self.demands.values()), default=1.0)
         self.max_layer = max((blk.layer for blk in self.blocks), default=0) + 1
         self.queue = [0.0 for _ in range(self.num_agents)]
         self.global_state_dim = 6 * self.num_agents + 3
@@ -141,6 +143,7 @@ class MultiAgentResourceAllocationEnv:
         self.queue = [max(q, 0.0) for q in self.lyapunov]
         self._max_block_compute = max((d.compute for d in self.demands.values()), default=1.0)
         self._max_block_memory = max((d.memory for d in self.demands.values()), default=1.0)
+        self._max_kv = max((d.kv_cache for d in self.demands.values()), default=1.0)
 
     def current_states(self) -> Tuple[List[List[float]], List[float]]:
         """Expose current local/global states for learners."""
@@ -185,7 +188,7 @@ class MultiAgentResourceAllocationEnv:
 
     def _update_queue(self, dev: int, load_ratio: float) -> None:
         drift = load_ratio - self.lyapunov_theta
-        self.queue[dev] = max(self.queue[dev] + drift, 0.0)
+        self.queue[dev] = max(self.queue[dev] + drift - self.queue_decay, 0.0)
         self.lyapunov[dev] = self.queue[dev]
 
     def _choose_device(self, block: Block, bids: Sequence[float]) -> Tuple[Optional[int], Dict[int, float]]:
@@ -199,7 +202,8 @@ class MultiAgentResourceAllocationEnv:
             mig_cost = self._migration_cost(block, dev)
             comm_delay = self._comm_delay(block, dev)
             # Lyapunov and migration act as penalties; bids reward willingness
-            score = base_score * (1.0 + self.lyapunov[dev])
+            lyap_weight = min(self.lyapunov[dev] * 0.1, 3.0)
+            score = base_score * (1.0 + lyap_weight)
             score += self.migration_penalty_scale * mig_cost
             score += self.comm_penalty_scale * comm_delay
             score -= bids[dev]
@@ -247,7 +251,7 @@ class MultiAgentResourceAllocationEnv:
                 - self.comp_penalty_scale * comp_delay
                 - self.migration_penalty_scale * mig_cost
                 + stick_bonus
-                - 0.05 * self.queue[device]
+                - min(self.queue[device] / 10.0, 1.0)
             )
             rewards = [team_reward for _ in range(self.num_agents)]
         else:
@@ -315,7 +319,8 @@ class MultiAgentResourceAllocationEnv:
         state.extend([c / (self._max_compute + 1e-6) for c in self.comp_used])
         state.extend([m / (self._max_memory + 1e-6) for m in self.mem_used])
         state.extend(loads)
-        queue_norm = [q / (max(self.queue) + 1e-6) for q in self.queue]
+        queue_scale = max(max(self.queue), 1.0)
+        queue_norm = [q / queue_scale for q in self.queue]
         state.extend(queue_norm)
         state.append(sum(loads) / len(loads) if loads else 0.0)
         state.append(max(loads) if loads else 0.0)

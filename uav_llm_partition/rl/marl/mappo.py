@@ -91,6 +91,7 @@ class MAPPOAgent:
         old_log_probs: List[List[float]],
         rewards: List[float],
         dones: List[bool],
+        values: List[float] | None = None,
     ) -> dict:
         if not rewards:
             return {"policy_loss": 0.0, "value_loss": 0.0, "entropy": 0.0}
@@ -100,7 +101,8 @@ class MAPPOAgent:
         if std_r > 1e-6:
             rewards = [(r - mean_r) / (std_r + 1e-6) for r in rewards]
 
-        values = [self.value(gs) for gs in global_states]
+        if values is None:
+            values = [self.value(gs) for gs in global_states]
         advantages, returns = self._compute_gae(rewards, values, dones)
         returns = [max(min(ret, 10.0), -10.0) for ret in returns]
 
@@ -113,52 +115,66 @@ class MAPPOAgent:
         total_value_loss = 0.0
         total_entropy = 0.0
 
-        per_agent_states: List[List[List[float]]] = [list() for _ in range(self.cfg.num_agents)]
-        per_agent_bids: List[List[float]] = [list() for _ in range(self.cfg.num_agents)]
-        per_agent_advs: List[List[float]] = [list() for _ in range(self.cfg.num_agents)]
-        for step_idx in range(len(states)):
-            for agent_id in range(self.cfg.num_agents):
-                per_agent_states[agent_id].append(states[step_idx][agent_id])
-                per_agent_bids[agent_id].append(bids[step_idx][agent_id])
-                per_agent_advs[agent_id].append(advantages[step_idx])
+        indices = list(range(len(states)))
+        import random
 
+        batch_size = max(8, len(states) // 2) if len(states) > 0 else 1
         for _ in range(self.cfg.ppo_epochs):
-            policy_loss = 0.0
-            value_loss = 0.0
-            entropy_acc = 0.0
-            for t in range(len(states)):
-                adv = advantages[t]
-                ret = returns[t]
+            random.shuffle(indices)
+            for start in range(0, len(indices), batch_size):
+                batch_idx = indices[start : start + batch_size]
+                policy_loss = 0.0
+                value_loss = 0.0
+                entropy_acc = 0.0
+
+                per_agent_states = [[] for _ in range(self.cfg.num_agents)]
+                per_agent_bids = [[] for _ in range(self.cfg.num_agents)]
+                per_agent_advs = [[] for _ in range(self.cfg.num_agents)]
+
+                for t in batch_idx:
+                    adv = advantages[t]
+                    ret = returns[t]
+                    for agent_id, actor in enumerate(self.actors):
+                        state = states[t][agent_id]
+                        bid = bids[t][agent_id]
+                        new_mean = actor.forward(state)
+                        new_log_prob = actor._log_prob(new_mean, bid)
+                        ratio = math.exp(new_log_prob - old_log_probs[t][agent_id])
+                        clipped_ratio = max(1.0 - self.cfg.clip_epsilon, min(1.0 + self.cfg.clip_epsilon, ratio))
+                        surr1 = ratio * adv
+                        surr2 = clipped_ratio * adv
+                        surrogate = surr1 if adv < 0 else min(surr1, surr2)
+                        entropy_term = actor._entropy()
+                        policy_loss += -surrogate - self.cfg.entropy_coef * entropy_term
+                        entropy_acc += entropy_term
+
+                        # use clipped surrogate as effective advantage for gradient step
+                        eff_adv = surrogate / max(ratio, 1e-6)
+                        per_agent_states[agent_id].append(state)
+                        per_agent_bids[agent_id].append(bid)
+                        per_agent_advs[agent_id].append(eff_adv)
+
+                    v_pred = self.value(global_states[t])
+                    value_loss += (v_pred - ret) ** 2
+
                 for agent_id, actor in enumerate(self.actors):
-                    state = states[t][agent_id]
-                    bid = bids[t][agent_id]
-                    new_mean = actor.forward(state)
-                    # reuse gaussian log-prob formulation
-                    bid_clamped = max(min(bid, 1.0 - 1e-6), 1e-6)
-                    var = actor.std * actor.std
-                    new_log_prob = -0.5 * ((bid_clamped - new_mean) ** 2) / var - math.log(
-                        actor.std * math.sqrt(2 * math.pi)
+                    actor.update(
+                        per_agent_states[agent_id],
+                        per_agent_bids[agent_id],
+                        [adv for adv in per_agent_advs[agent_id]],
+                        lr=self.cfg.lr,
+                        max_grad_norm=self.cfg.max_grad_norm,
                     )
-                    ratio = math.exp(new_log_prob - old_log_probs[t][agent_id])
-                    clipped_ratio = max(1.0 - self.cfg.clip_epsilon, min(1.0 + self.cfg.clip_epsilon, ratio))
-                    surr1 = ratio * adv
-                    surr2 = clipped_ratio * adv
-                    entropy_term = actor._entropy()
-                    policy_loss += -min(surr1, surr2) - self.cfg.entropy_coef * entropy_term
-                    entropy_acc += entropy_term
-                v_pred = self.value(global_states[t])
-                value_loss += (v_pred - ret) ** 2
+                batch_global = [global_states[t] for t in batch_idx]
+                batch_returns = [returns[t] for t in batch_idx]
+                self.critic.update(batch_global, batch_returns, lr=self.cfg.lr * self.cfg.value_lr_scale)
 
-            for agent_id, actor in enumerate(self.actors):
-                actor.update(per_agent_states[agent_id], per_agent_bids[agent_id], per_agent_advs[agent_id], lr=self.cfg.lr)
-            self.critic.update(global_states, returns, lr=self.cfg.lr * self.cfg.value_lr_scale)
+                steps_count = max(len(batch_idx), 1)
+                total_policy_loss += policy_loss / steps_count
+                total_value_loss += value_loss / steps_count
+                total_entropy += entropy_acc / steps_count
 
-            steps_count = max(len(states), 1)
-            total_policy_loss += policy_loss / steps_count
-            total_value_loss += value_loss / steps_count
-            total_entropy += entropy_acc / steps_count
-
-        updates = float(self.cfg.ppo_epochs)
+        updates = max((len(indices) / batch_size) * self.cfg.ppo_epochs, 1.0)
         return {
             "policy_loss": total_policy_loss / updates,
             "value_loss": total_value_loss / updates,

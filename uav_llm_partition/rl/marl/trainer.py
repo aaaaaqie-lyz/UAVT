@@ -44,6 +44,7 @@ class MARLTrainer:
                 global_state=global_state,
                 log_probs=log_probs,
                 bids=bids,
+                value=self.agent.value(global_state),
                 reward=step.team_reward,
                 rewards_by_agent=step.rewards,
                 done=step.done,
@@ -62,12 +63,13 @@ class MARLTrainer:
         self,
         env_factory: Iterable[MultiAgentResourceAllocationEnv] | Callable[[], MultiAgentResourceAllocationEnv],
         episodes: int = 500,
-        update_every: int = 4,
+        update_every: int = 8,
+        parallel_envs: int = 4,
     ) -> None:
         rollout_counter = 0
         for ep in range(episodes):
             if callable(env_factory):
-                envs = [env_factory()]
+                envs = [env_factory() for _ in range(max(parallel_envs, 1))]
             else:
                 envs = list(env_factory)
             cumulative = 0.0
@@ -86,6 +88,7 @@ class MARLTrainer:
                         batch["log_probs"],
                         batch["rewards"],
                         batch["dones"],
+                        batch.get("values"),
                     )
                     policy_losses.append(stats["policy_loss"])
                     value_losses.append(stats["value_loss"])
@@ -108,5 +111,6 @@ class MARLTrainer:
                 batch["log_probs"],
                 batch["rewards"],
                 batch["dones"],
+                batch.get("values"),
             )
             self.buffer.clear()

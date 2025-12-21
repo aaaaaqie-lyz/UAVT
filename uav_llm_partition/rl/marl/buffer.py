@@ -11,6 +11,7 @@ class MAPPOTransition:
     global_state: List[float]
     bids: List[float]
     log_probs: List[float]
+    value: float
     reward: float  # team reward
     rewards_by_agent: List[float]
     done: bool
@@ -26,6 +27,7 @@ class MAPPOBuffer:
         global_state: List[float],
         bids: Sequence[float],
         log_probs: Sequence[float],
+        value: float,
         reward: float,
         rewards_by_agent: Sequence[float],
         done: bool,
@@ -36,6 +38,7 @@ class MAPPOBuffer:
                 global_state=list(global_state),
                 bids=list(bids),
                 log_probs=list(log_probs),
+                value=float(value),
                 reward=float(reward),
                 rewards_by_agent=list(rewards_by_agent),
                 done=done,
@@ -52,6 +55,7 @@ class MAPPOBuffer:
         global_states = [t.global_state for t in self.transitions]
         bids = [t.bids for t in self.transitions]
         log_probs = [t.log_probs for t in self.transitions]
+        values = [t.value for t in self.transitions]
         rewards = [t.reward for t in self.transitions]
         rewards_by_agent = [t.rewards_by_agent for t in self.transitions]
         dones = [t.done for t in self.transitions]
@@ -60,6 +64,7 @@ class MAPPOBuffer:
             "global_states": global_states,
             "bids": bids,
             "log_probs": log_probs,
+            "values": values,
             "rewards": rewards,
             "rewards_by_agent": rewards_by_agent,
             "dones": dones,
