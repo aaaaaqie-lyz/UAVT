@@ -231,6 +231,128 @@ class ValueNetwork:
                 if layer > 0:
                     grad_prev = [sum(self.weights[layer][i][k] * grad_prev[k] for k in range(len(grad_prev))) for i in range(len(self.weights[layer]))]
 
+        for i in range(len(self.weights[-1])):
+            self.weights[-1][i][0] -= lr * grad_w_last[i][0]
+        self.biases[-1][0] -= lr * grad_b_last[0]
+
+
+class ContinuousPolicyNetwork:
+    """Single-output policy with sigmoid squashing for continuous bids in [0, 1]."""
+
+    def __init__(self, state_dim: int, hidden_dims: Sequence[int] = (64, 32), std: float = 0.1) -> None:
+        dims = [state_dim, *hidden_dims, 1]
+        self.weights = [
+            [[random.uniform(-0.01, 0.01) for _ in range(dims[i + 1])] for _ in range(dims[i])]
+            for i in range(len(dims) - 1)
+        ]
+        self.biases = [[0.0 for _ in range(dims[i + 1])] for i in range(len(dims) - 1)]
+        self.std = std
+
+    # -----------------------------
+    # Forward / sampling
+    # -----------------------------
+    def _forward_with_cache(self, state: Sequence[float]):
+        activations = [list(state)]
+        zs = []
+        x = list(state)
+        for W, b in zip(self.weights[:-1], self.biases[:-1]):
+            z = _dot(x, W, b)
+            zs.append(z)
+            x = _relu(z)
+            activations.append(x)
+        logits = _dot(x, self.weights[-1], self.biases[-1])
+        mean = 1.0 / (1.0 + math.exp(-logits[0]))
+        return mean, activations, zs, logits[0]
+
+    def forward(self, state: Sequence[float]) -> float:
+        mean, _, _, _ = self._forward_with_cache(state)
+        return mean
+
+    def _log_prob(self, mean: float, bid: float) -> float:
+        bid_clamped = max(min(bid, 1.0 - 1e-6), 1e-6)
+        var = self.std * self.std
+        return -0.5 * ((bid_clamped - mean) ** 2) / var - math.log(self.std * math.sqrt(2 * math.pi))
+
+    def _entropy(self) -> float:
+        return 0.5 * math.log(2 * math.pi * math.e * self.std * self.std)
+
+    def get_action_and_log_prob(self, state: Sequence[float], deterministic: bool = False) -> tuple[float, float, float]:
+        mean = self.forward(state)
+        if deterministic:
+            bid = mean
+            log_prob = self._log_prob(mean, bid)
+            return bid, log_prob, self._entropy()
+
+        import random
+
+        bid = random.gauss(mean, self.std)
+        bid = max(0.0, min(1.0, bid))
+        log_prob = self._log_prob(mean, bid)
+        return bid, log_prob, self._entropy()
+
+    def update(self, states, bids, advantages, lr: float = 1e-3, max_grad_norm: float = 0.5) -> None:
+        """Policy gradient update using Gaussian log-prob with sigmoid mean."""
+
+        for state, bid, adv in zip(states, bids, advantages):
+            if abs(adv) < 1e-9:
+                continue
+            mean, activations, zs, logit = self._forward_with_cache(state)
+            bid_clamped = max(min(bid, 1.0 - 1e-6), 1e-6)
+            grad_logprob_mean = (bid_clamped - mean) / (self.std * self.std)
+            grad_mean_logit = mean * (1.0 - mean)
+            grad_logit = -adv * grad_logprob_mean * grad_mean_logit
+            grad_logit = max(min(grad_logit, max_grad_norm), -max_grad_norm)
+
+            # backprop similar to value network (single output)
+            grad_out = [grad_logit]
+            grad_w_last = [[activations[-1][i] * grad_out[0]] for i in range(len(activations[-1]))]
+            grad_b_last = list(grad_out)
+
+            grad_prev = [self.weights[-1][i][0] * grad_out[0] for i in range(len(self.weights[-1]))]
+            for layer in reversed(range(len(self.weights) - 1)):
+                z = zs[layer]
+                relu_mask = [1.0 if v > 0 else 0.0 for v in z]
+                grad_prev = [g * m for g, m in zip(grad_prev, relu_mask)]
+                grad_w = [[activations[layer][i] * grad_prev[j] for j in range(len(grad_prev))] for i in range(len(activations[layer]))]
+                grad_b = list(grad_prev)
+                for i in range(len(self.weights[layer])):
+                    for j in range(len(self.weights[layer][i])):
+                        self.weights[layer][i][j] -= lr * grad_w[i][j]
+                for j in range(len(self.biases[layer])):
+                    self.biases[layer][j] -= lr * grad_b[j]
+                if layer > 0:
+                    grad_prev = [sum(self.weights[layer][i][k] * grad_prev[k] for k in range(len(grad_prev))) for i in range(len(self.weights[layer]))]
+
             for i in range(len(self.weights[-1])):
-                self.weights[-1][i][0] -= lr * grad_w_last[i][0]
-            self.biases[-1][0] -= lr * grad_b_last[0]
+                for j in range(len(self.weights[-1][i])):
+                    self.weights[-1][i][j] -= lr * grad_w_last[i][j]
+            for j in range(len(self.biases[-1])):
+                self.biases[-1][j] -= lr * grad_b_last[j]
+
+    # -----------------------------
+    # Persistence helpers
+    # -----------------------------
+    def to_dict(self) -> dict:
+        return {"weights": self.weights, "biases": self.biases, "std": self.std}
+
+    @classmethod
+    def from_dict(cls, payload: dict) -> "ContinuousPolicyNetwork":
+        obj: "ContinuousPolicyNetwork" = cls.__new__(cls)  # type: ignore[call-arg]
+        obj.weights = payload["weights"]
+        obj.biases = payload["biases"]
+        obj.std = payload.get("std", 0.1)
+        return obj
+
+    def save(self, path: str) -> None:
+        import json
+
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(self.to_dict(), f)
+
+    @classmethod
+    def load(cls, path: str) -> "ContinuousPolicyNetwork":
+        import json
+
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return cls.from_dict(data)

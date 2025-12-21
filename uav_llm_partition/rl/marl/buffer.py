@@ -9,9 +9,10 @@ from typing import List, Sequence
 class MAPPOTransition:
     local_states: List[List[float]]
     global_state: List[float]
-    actions: List[int]
+    bids: List[float]
     log_probs: List[float]
-    rewards: List[float]
+    reward: float  # team reward
+    rewards_by_agent: List[float]
     done: bool
 
 
@@ -23,21 +24,43 @@ class MAPPOBuffer:
         self,
         local_states: List[List[float]],
         global_state: List[float],
-        actions: Sequence[int],
+        bids: Sequence[float],
         log_probs: Sequence[float],
-        rewards: Sequence[float],
+        reward: float,
+        rewards_by_agent: Sequence[float],
         done: bool,
     ) -> None:
         self.transitions.append(
             MAPPOTransition(
                 local_states=list(local_states),
                 global_state=list(global_state),
-                actions=list(actions),
+                bids=list(bids),
                 log_probs=list(log_probs),
-                rewards=list(rewards),
+                reward=float(reward),
+                rewards_by_agent=list(rewards_by_agent),
                 done=done,
             )
         )
 
     def clear(self) -> None:
         self.transitions.clear()
+
+    def as_batch(self) -> dict:
+        """Return stacked trajectories for learning."""
+
+        local_states = [t.local_states for t in self.transitions]
+        global_states = [t.global_state for t in self.transitions]
+        bids = [t.bids for t in self.transitions]
+        log_probs = [t.log_probs for t in self.transitions]
+        rewards = [t.reward for t in self.transitions]
+        rewards_by_agent = [t.rewards_by_agent for t in self.transitions]
+        dones = [t.done for t in self.transitions]
+        return {
+            "local_states": local_states,
+            "global_states": global_states,
+            "bids": bids,
+            "log_probs": log_probs,
+            "rewards": rewards,
+            "rewards_by_agent": rewards_by_agent,
+            "dones": dones,
+        }

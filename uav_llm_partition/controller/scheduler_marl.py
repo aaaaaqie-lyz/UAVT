@@ -36,7 +36,6 @@ class MARLScheduler:
                 cfg.num_agents == num_agents
                 and cfg.local_state_dim == local_state_dim
                 and cfg.global_state_dim == global_state_dim
-                and cfg.action_dim == len(self.agent.BID_LEVELS)
             ):
                 return
             logger.warning(
@@ -58,7 +57,6 @@ class MARLScheduler:
                     cfg.num_agents == num_agents
                     and cfg.local_state_dim == local_state_dim
                     and cfg.global_state_dim == global_state_dim
-                    and cfg.action_dim == len(candidate.BID_LEVELS)
                 ):
                     self.agent = candidate
                     logger.info("Loaded MARL agent from %s", self.model_path)
@@ -119,7 +117,7 @@ class MARLScheduler:
         )
 
         while env.block_idx < len(env.blocks):
-            bids = self.agent.select_bids(local_states)
+            bids, _, _ = self.agent.select_bids(local_states, deterministic=True)
             step = env.step(bids)
             if step.done:
                 break

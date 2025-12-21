@@ -18,6 +18,7 @@ class EnvStep:
     next_local_states: Optional[List[List[float]]]
     next_global_state: Optional[List[float]]
     rewards: List[float]
+    team_reward: float
     done: bool
     assignment: Optional[Tuple[Block, int]] = None
 
@@ -39,6 +40,7 @@ class MultiAgentResourceAllocationEnv:
         load_guard: float = 1.0,
         prev_assignment: Optional[Dict[Block, int]] = None,
         migration_overhead: float = 0.01,
+        lyapunov_theta: float = 0.3,
     ) -> None:
         self.blocks = list(blocks)
         self.demands = demands
@@ -52,9 +54,10 @@ class MultiAgentResourceAllocationEnv:
         self.load_guard = load_guard
         self.prev_assignment = prev_assignment or {}
         self.migration_overhead = migration_overhead
+        self.lyapunov_theta = lyapunov_theta
 
         # Expected dimensions (base features + block features)
-        self.local_state_dim = 16
+        self.local_state_dim = 17
 
         # Reward/penalty knobs
         self.migration_penalty_scale = 0.1
@@ -68,7 +71,9 @@ class MultiAgentResourceAllocationEnv:
         self._max_memory = max(self.memory) if self.memory else 1.0
         self._max_block_compute = max((d.compute for d in self.demands.values()), default=1.0)
         self._max_block_memory = max((d.memory for d in self.demands.values()), default=1.0)
-        self.global_state_dim = 5 * self.num_agents + 2
+        self.max_layer = max((blk.layer for blk in self.blocks), default=0) + 1
+        self.queue = [0.0 for _ in range(self.num_agents)]
+        self.global_state_dim = 6 * self.num_agents + 3
         self.reset()
 
     # ------------------------------------------------------------------
@@ -77,6 +82,7 @@ class MultiAgentResourceAllocationEnv:
         self.comp_used = [0.0 for _ in range(self.num_agents)]
         self.mem_used = [0.0 for _ in range(self.num_agents)]
         self.block_idx = 0
+        self.queue = [max(q, 0.0) for q in self.lyapunov]
         return self._get_local_states(), self._get_global_state()
 
     def retain_feasible_prev(self) -> Tuple[Dict[Block, int], List[float], List[float], List[Block]]:
@@ -132,6 +138,7 @@ class MultiAgentResourceAllocationEnv:
         self.mem_used = list(mem_used)
         self.blocks = list(pending_blocks)
         self.block_idx = 0
+        self.queue = [max(q, 0.0) for q in self.lyapunov]
         self._max_block_compute = max((d.compute for d in self.demands.values()), default=1.0)
         self._max_block_memory = max((d.memory for d in self.demands.values()), default=1.0)
 
@@ -176,6 +183,11 @@ class MultiAgentResourceAllocationEnv:
         rate = self.bandwidth[prev][dev] + 1e-6
         return kv / rate + self.migration_overhead
 
+    def _update_queue(self, dev: int, load_ratio: float) -> None:
+        drift = load_ratio - self.lyapunov_theta
+        self.queue[dev] = max(self.queue[dev] + drift, 0.0)
+        self.lyapunov[dev] = self.queue[dev]
+
     def _choose_device(self, block: Block, bids: Sequence[float]) -> Tuple[Optional[int], Dict[int, float]]:
         scores: Dict[int, float] = {}
         prev_dev = self.prev_assignment.get(block)
@@ -205,12 +217,13 @@ class MultiAgentResourceAllocationEnv:
 
     def step(self, bids: Sequence[float]) -> EnvStep:
         if self.block_idx >= len(self.blocks):
-            return EnvStep(None, None, [0.0 for _ in range(self.num_agents)], True, None)
+            return EnvStep(None, None, [0.0 for _ in range(self.num_agents)], 0.0, True, None)
 
         block = self.blocks[self.block_idx]
         device, score_map = self._choose_device(block, bids)
         failed = device is None
         rewards = [0.0 for _ in range(self.num_agents)]
+        team_reward = 0.0
         if not failed:
             self.assignment[block] = device
             demand = self.demands[block]
@@ -222,22 +235,33 @@ class MultiAgentResourceAllocationEnv:
             stick_bonus = 0.0
             if block in self.prev_assignment and self.prev_assignment[block] == device:
                 stick_bonus = self.stability_bonus
-            rewards[device] = (
-                1.0 - min(score_map.get(device, 0.0), 1.0)
+            load_ratio = max(
+                self.comp_used[device] / (self.compute[device] + 1e-6),
+                self.mem_used[device] / (self.memory[device] + 1e-6),
+            )
+            self._update_queue(device, load_ratio)
+            team_reward = (
+                1.0
+                - min(score_map.get(device, 0.0), 1.0)
                 - self.comm_penalty_scale * comm_delay
                 - self.comp_penalty_scale * comp_delay
                 - self.migration_penalty_scale * mig_cost
                 + stick_bonus
+                - 0.05 * self.queue[device]
             )
+            rewards = [team_reward for _ in range(self.num_agents)]
         else:
             # penalize everyone if no one could take the block
-            rewards = [-0.5 for _ in range(self.num_agents)]
+            team_reward = -0.5
+            rewards = [team_reward for _ in range(self.num_agents)]
+        if failed:
+            team_reward = rewards[0] if rewards else -0.5
 
         self.block_idx += 1
         done = self.block_idx >= len(self.blocks)
         next_local = None if done else self._get_local_states()
         next_global = None if done else self._get_global_state()
-        return EnvStep(next_local, next_global, rewards, done, (block, device) if not failed else None)
+        return EnvStep(next_local, next_global, rewards, team_reward, done, (block, device) if not failed else None)
 
     # ------------------------------------------------------------------
     def _get_local_states(self) -> List[List[float]]:
@@ -254,27 +278,29 @@ class MultiAgentResourceAllocationEnv:
                 self.mem_used[dev] / (self._max_memory + 1e-6),
                 comp_ratio,
                 mem_ratio,
-                self.lyapunov[dev],
+                self.queue[dev],
                 self.weights[dev],
             ]
             if current_block:
                 demand = self.demands[current_block]
                 comm_cost = self._comm_delay(current_block, dev)
                 mig_cost = self._migration_cost(current_block, dev)
+                feasible, _ = self._feasible(current_block, dev)
                 state.extend(
                     [
                         demand.compute / (self._max_block_compute + 1e-6),
                         demand.memory / (self._max_block_memory + 1e-6),
                         demand.kv_cache / (self._max_block_memory + 1e-6),
-                        current_block.layer,
+                        current_block.layer / max(self.max_layer, 1),
                         1 if current_block.kind == "head" else 0,
                         comm_cost,
                         mig_cost,
                         1.0 if self.prev_assignment.get(current_block) == dev else 0.0,
+                        1.0 if feasible else 0.0,
                     ]
                 )
             else:
-                state.extend([0.0 for _ in range(8)])
+                state.extend([0.0 for _ in range(9)])
             assert len(state) == self.local_state_dim, f"local state dim mismatch {len(state)} != {self.local_state_dim}"
             states.append(state)
         return states
@@ -289,9 +315,12 @@ class MultiAgentResourceAllocationEnv:
         state.extend([c / (self._max_compute + 1e-6) for c in self.comp_used])
         state.extend([m / (self._max_memory + 1e-6) for m in self.mem_used])
         state.extend(loads)
+        queue_norm = [q / (max(self.queue) + 1e-6) for q in self.queue]
+        state.extend(queue_norm)
         state.append(sum(loads) / len(loads) if loads else 0.0)
         state.append(max(loads) if loads else 0.0)
-        expected = 5 * self.num_agents + 2
+        state.append(sum(self.queue) / max(len(self.queue), 1))
+        expected = self.global_state_dim
         assert len(state) == expected, f"global state dim mismatch {len(state)} != {expected}"
         return state
 

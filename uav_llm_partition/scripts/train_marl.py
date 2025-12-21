@@ -67,18 +67,25 @@ def main() -> None:
         env_sample = _make_env()
         local_states, global_state = env_sample.reset()
         cfg = MAPPOAgent.default_config(
-            num_agents=sim.num_uav,
+            num_agents=len(local_states),
             local_state_dim=len(local_states[0]),
             global_state_dim=len(global_state),
         )
+        agent = MAPPOAgent(cfg)
         if args.resume:
             try:
-                agent = MAPPOAgent.load(args.model_path)
-                print(f"Loaded MARL agent from {args.model_path}")
+                loaded = MAPPOAgent.load(args.model_path)
+                if (
+                    loaded.cfg.num_agents == cfg.num_agents
+                    and loaded.cfg.local_state_dim == cfg.local_state_dim
+                    and loaded.cfg.global_state_dim == cfg.global_state_dim
+                ):
+                    agent = loaded
+                    print(f"Loaded MARL agent from {args.model_path}")
+                else:
+                    print("Model dimensions mismatch; starting fresh agent")
             except FileNotFoundError:
-                agent = MAPPOAgent(cfg)
-        else:
-            agent = MAPPOAgent(cfg)
+                pass
         trainer = MARLTrainer(agent)
         trainer.train(_make_env, episodes=args.episodes)
         agent.save(args.model_path)
