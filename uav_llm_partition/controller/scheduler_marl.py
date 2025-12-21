@@ -18,17 +18,66 @@ class MARLScheduler:
         self.model_path = model_path
         self.mig_overhead = mig_overhead
 
-    def _ensure_agent(self, num_agents: int, local_state_dim: int) -> None:
+    def _ensure_agent(self, num_agents: int, local_state_dim: int, global_state_dim: int) -> None:
+        """Load or create a MAPPO agent with dimension validation and fallbacks."""
+
+        def _create() -> None:
+            self.agent = MAPPOAgent(
+                MAPPOAgent.default_config(
+                    num_agents=num_agents,
+                    local_state_dim=local_state_dim,
+                    global_state_dim=global_state_dim,
+                    action_dim=num_agents,
+                )
+            )
+
         if self.agent is not None:
-            return
+            cfg = self.agent.cfg
+            if (
+                cfg.num_agents == num_agents
+                and cfg.local_state_dim == local_state_dim
+                and cfg.global_state_dim == global_state_dim
+                and cfg.action_dim == num_agents
+            ):
+                return
+            logger.warning(
+                "Existing MARL agent dims mismatch (agents=%s/%s, local=%s/%s, global=%s/%s), recreating",
+                cfg.num_agents,
+                num_agents,
+                cfg.local_state_dim,
+                local_state_dim,
+                cfg.global_state_dim,
+                global_state_dim,
+            )
+            self.agent = None
+
         if self.model_path:
             try:
-                self.agent = MAPPOAgent.load(self.model_path)
-                return
-            except FileNotFoundError:
-                logger.warning("MARL model path %s not found, creating fresh agent", self.model_path)
-        # bids are scalar per agent; action_dim equals num_agents to mirror device ids
-        self.agent = MAPPOAgent(num_agents=num_agents, local_state_dim=local_state_dim, action_dim=num_agents)
+                candidate = MAPPOAgent.load(self.model_path)
+                cfg = candidate.cfg
+                if (
+                    cfg.num_agents == num_agents
+                    and cfg.local_state_dim == local_state_dim
+                    and cfg.global_state_dim == global_state_dim
+                    and cfg.action_dim == num_agents
+                ):
+                    self.agent = candidate
+                    logger.info("Loaded MARL agent from %s", self.model_path)
+                    return
+                logger.warning(
+                    "MARL model dims mismatch; expected agents=%s, local=%s, global=%s, got agents=%s, local=%s, global=%s."
+                    " Recreating fresh agent.",
+                    num_agents,
+                    local_state_dim,
+                    global_state_dim,
+                    cfg.num_agents,
+                    cfg.local_state_dim,
+                    cfg.global_state_dim,
+                )
+            except (FileNotFoundError, KeyError, ValueError, IndexError, TypeError) as exc:
+                logger.error("Failed to load MARL model from %s: %s", self.model_path, exc)
+
+        _create()
 
     def assign(
         self,
@@ -57,10 +106,20 @@ class MARLScheduler:
             prev_assignment=prev_assignment,
             migration_overhead=self.mig_overhead,
         )
-        local_states, _ = env.reset()
-        self._ensure_agent(num_agents=len(compute), local_state_dim=len(local_states[0]) if local_states else 1)
+        local_states, global_state = env.reset()
 
-        while env.block_idx < len(blocks):
+        # Try to keep feasible previous assignments and only reassign what is infeasible
+        kept_assignment, comp_used, mem_used, pending_blocks = env.retain_feasible_prev()
+        env.apply_partial_state(kept_assignment, comp_used, mem_used, pending_blocks)
+        local_states, global_state = env.current_states()
+
+        self._ensure_agent(
+            num_agents=len(compute),
+            local_state_dim=len(local_states[0]) if local_states else 1,
+            global_state_dim=len(global_state) if global_state else 1,
+        )
+
+        while env.block_idx < len(env.blocks):
             mask = env.action_mask()
             bids = self.agent.select_bids(local_states, mask)
             step = env.step(bids)

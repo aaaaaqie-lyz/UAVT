@@ -36,6 +36,15 @@ class MAPPOAgent:
         ]
         self.critic = ValueNetwork(config.global_state_dim, hidden_dims=(64, 32))
 
+    @staticmethod
+    def default_config(num_agents: int, local_state_dim: int, global_state_dim: int, action_dim: int) -> MAPPOConfig:
+        return MAPPOConfig(
+            num_agents=num_agents,
+            local_state_dim=local_state_dim,
+            global_state_dim=global_state_dim,
+            action_dim=action_dim,
+        )
+
     def select_actions(
         self, local_states: Sequence[Sequence[float]], action_mask: Sequence[bool], deterministic: bool = False
     ) -> tuple[List[int], List[float], float]:
@@ -193,6 +202,11 @@ class MAPPOAgent:
             data = json.load(f)
         cfg = MAPPOConfig(**data["config"])
         agent = cls(cfg)
-        agent.actors = [PolicyNetwork.from_dict(p) for p in data.get("actors", [])]
+        actors = [PolicyNetwork.from_dict(p) for p in data.get("actors", [])]
+        if len(actors) != cfg.num_agents:
+            raise ValueError(
+                f"Loaded MARL actor count {len(actors)} does not match num_agents {cfg.num_agents}"
+            )
+        agent.actors = actors
         agent.critic = ValueNetwork.from_dict(data["critic"])
         return agent

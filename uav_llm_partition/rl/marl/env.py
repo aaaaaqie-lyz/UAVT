@@ -75,6 +75,62 @@ class MultiAgentResourceAllocationEnv:
         self.block_idx = 0
         return self._get_local_states(), self._get_global_state()
 
+    def retain_feasible_prev(self) -> Tuple[Dict[Block, int], List[float], List[float], List[Block]]:
+        """Keep previous assignments that remain feasible to avoid unnecessary migration.
+
+        Returns (kept_assignment, comp_used, mem_used, pending_blocks).
+        """
+
+        kept: Dict[Block, int] = {}
+        comp_used = [0.0 for _ in range(self.num_agents)]
+        mem_used = [0.0 for _ in range(self.num_agents)]
+        pending: List[Block] = []
+        for block in self.blocks:
+            prev_dev = self.prev_assignment.get(block)
+            if prev_dev is None:
+                pending.append(block)
+                continue
+            demand = self.demands[block]
+            comp_future = comp_used[prev_dev] + demand.compute
+            mem_future = mem_used[prev_dev] + demand.memory
+            compute_ratio = comp_future / (self.compute[prev_dev] + 1e-6)
+            memory_ratio = mem_future / (self.memory[prev_dev] + 1e-6)
+            comm_ratio = 0.0
+            for up, down in self.dependencies:
+                if (up == block and down in kept and kept[down] != prev_dev) or (
+                    down == block and up in kept and kept[up] != prev_dev
+                ):
+                    size = self.activation_sizes.get((up, down), 0.0)
+                    src = kept.get(up, prev_dev)
+                    dst = kept.get(down, prev_dev)
+                    if src != dst:
+                        comm_ratio += size / (self.bandwidth[src][dst] + 1e-6)
+            score = max(compute_ratio, memory_ratio, comm_ratio)
+            if score <= self.load_guard:
+                kept[block] = prev_dev
+                comp_used[prev_dev] = comp_future
+                mem_used[prev_dev] = mem_future
+            else:
+                pending.append(block)
+        return kept, comp_used, mem_used, pending
+
+    def apply_partial_state(
+        self,
+        kept_assignment: Dict[Block, int],
+        comp_used: List[float],
+        mem_used: List[float],
+        pending_blocks: List[Block],
+    ) -> None:
+        """Seed the environment with kept assignments and restrict to pending blocks."""
+
+        self.assignment = dict(kept_assignment)
+        self.comp_used = list(comp_used)
+        self.mem_used = list(mem_used)
+        self.blocks = list(pending_blocks)
+        self.block_idx = 0
+        self._max_block_compute = max((d.compute for d in self.demands.values()), default=1.0)
+        self._max_block_memory = max((d.memory for d in self.demands.values()), default=1.0)
+
     def current_states(self) -> Tuple[List[List[float]], List[float]]:
         """Expose current local/global states for learners."""
 
