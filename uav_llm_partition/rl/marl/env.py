@@ -63,9 +63,11 @@ class MultiAgentResourceAllocationEnv:
         self.migration_penalty_scale = 0.1
         self.comm_penalty_scale = 0.1
         self.comp_penalty_scale = 0.05
+        self.bid_weight = 0.5
         self.stability_bonus = 0.05
         self.stability_margin = 0.05
         self.queue_decay = 0.02
+        self.queue_cap = 5.0
 
         self.num_agents = len(self.compute)
         self._max_compute = max(self.compute) if self.compute else 1.0
@@ -84,7 +86,7 @@ class MultiAgentResourceAllocationEnv:
         self.comp_used = [0.0 for _ in range(self.num_agents)]
         self.mem_used = [0.0 for _ in range(self.num_agents)]
         self.block_idx = 0
-        self.queue = [max(q, 0.0) for q in self.lyapunov]
+        self.queue = [max(min(q, self.queue_cap), 0.0) for q in self.lyapunov]
         return self._get_local_states(), self._get_global_state()
 
     def retain_feasible_prev(self) -> Tuple[Dict[Block, int], List[float], List[float], List[Block]]:
@@ -140,7 +142,7 @@ class MultiAgentResourceAllocationEnv:
         self.mem_used = list(mem_used)
         self.blocks = list(pending_blocks)
         self.block_idx = 0
-        self.queue = [max(q, 0.0) for q in self.lyapunov]
+        self.queue = [max(min(q, self.queue_cap), 0.0) for q in self.lyapunov]
         self._max_block_compute = max((d.compute for d in self.demands.values()), default=1.0)
         self._max_block_memory = max((d.memory for d in self.demands.values()), default=1.0)
         self._max_kv = max((d.kv_cache for d in self.demands.values()), default=1.0)
@@ -188,7 +190,8 @@ class MultiAgentResourceAllocationEnv:
 
     def _update_queue(self, dev: int, load_ratio: float) -> None:
         drift = load_ratio - self.lyapunov_theta
-        self.queue[dev] = max(self.queue[dev] + drift - self.queue_decay, 0.0)
+        new_q = self.queue[dev] + drift - self.queue_decay
+        self.queue[dev] = max(min(new_q, self.queue_cap), 0.0)
         self.lyapunov[dev] = self.queue[dev]
 
     def _choose_device(self, block: Block, bids: Sequence[float]) -> Tuple[Optional[int], Dict[int, float]]:
@@ -206,7 +209,7 @@ class MultiAgentResourceAllocationEnv:
             score = base_score * (1.0 + lyap_weight)
             score += self.migration_penalty_scale * mig_cost
             score += self.comm_penalty_scale * comm_delay
-            score -= bids[dev]
+            score -= self.bid_weight * bids[dev]
             scores[dev] = score
             if prev_dev is not None and dev == prev_dev:
                 prev_score = score - self.stability_margin  # make previous slightly more attractive
@@ -244,15 +247,17 @@ class MultiAgentResourceAllocationEnv:
                 self.mem_used[device] / (self.memory[device] + 1e-6),
             )
             self._update_queue(device, load_ratio)
+            queue_penalty = min(self.queue[device] / self.queue_cap, 1.0)
             team_reward = (
                 1.0
                 - min(score_map.get(device, 0.0), 1.0)
                 - self.comm_penalty_scale * comm_delay
                 - self.comp_penalty_scale * comp_delay
                 - self.migration_penalty_scale * mig_cost
+                - queue_penalty
                 + stick_bonus
-                - min(self.queue[device] / 10.0, 1.0)
             )
+            team_reward = max(min(team_reward, 1.0), -1.0)
             rewards = [team_reward for _ in range(self.num_agents)]
         else:
             # penalize everyone if no one could take the block
@@ -282,7 +287,7 @@ class MultiAgentResourceAllocationEnv:
                 self.mem_used[dev] / (self._max_memory + 1e-6),
                 comp_ratio,
                 mem_ratio,
-                self.queue[dev],
+                min(self.queue[dev] / self.queue_cap, 1.0),
                 self.weights[dev],
             ]
             if current_block:
@@ -294,7 +299,7 @@ class MultiAgentResourceAllocationEnv:
                     [
                         demand.compute / (self._max_block_compute + 1e-6),
                         demand.memory / (self._max_block_memory + 1e-6),
-                        demand.kv_cache / (self._max_block_memory + 1e-6),
+                        demand.kv_cache / (self._max_kv + 1e-6),
                         current_block.layer / max(self.max_layer, 1),
                         1 if current_block.kind == "head" else 0,
                         comm_cost,
@@ -319,12 +324,12 @@ class MultiAgentResourceAllocationEnv:
         state.extend([c / (self._max_compute + 1e-6) for c in self.comp_used])
         state.extend([m / (self._max_memory + 1e-6) for m in self.mem_used])
         state.extend(loads)
-        queue_scale = max(max(self.queue), 1.0)
-        queue_norm = [q / queue_scale for q in self.queue]
+        queue_norm = [min(q / self.queue_cap, 1.0) for q in self.queue]
         state.extend(queue_norm)
         state.append(sum(loads) / len(loads) if loads else 0.0)
         state.append(max(loads) if loads else 0.0)
-        state.append(sum(self.queue) / max(len(self.queue), 1))
+        mean_q = sum(self.queue) / max(len(self.queue), 1)
+        state.append(min(mean_q / self.queue_cap, 1.0))
         expected = self.global_state_dim
         assert len(state) == expected, f"global state dim mismatch {len(state)} != {expected}"
         return state

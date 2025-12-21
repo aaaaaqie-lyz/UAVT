@@ -137,18 +137,17 @@ class MAPPOAgent:
                     for agent_id, actor in enumerate(self.actors):
                         state = states[t][agent_id]
                         bid = bids[t][agent_id]
-                        new_mean = actor.forward(state)
-                        new_log_prob = actor._log_prob(new_mean, bid)
+                        mean = actor.forward(state)
+                        new_log_prob = actor._log_prob(mean, bid)
                         ratio = math.exp(new_log_prob - old_log_probs[t][agent_id])
                         clipped_ratio = max(1.0 - self.cfg.clip_epsilon, min(1.0 + self.cfg.clip_epsilon, ratio))
                         surr1 = ratio * adv
                         surr2 = clipped_ratio * adv
-                        surrogate = surr1 if adv < 0 else min(surr1, surr2)
+                        surrogate = min(surr1, surr2)
                         entropy_term = actor._entropy()
                         policy_loss += -surrogate - self.cfg.entropy_coef * entropy_term
                         entropy_acc += entropy_term
 
-                        # use clipped surrogate as effective advantage for gradient step
                         eff_adv = surrogate / max(ratio, 1e-6)
                         per_agent_states[agent_id].append(state)
                         per_agent_bids[agent_id].append(bid)
