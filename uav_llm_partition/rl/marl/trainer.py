@@ -35,8 +35,10 @@ class MARLTrainer:
         total_reward = 0.0
         steps = 0
         while True:
-            bids, log_probs, _ = self.agent.select_bids(local_states)
             mask = env.action_mask()
+            bids, log_probs, means, stds = self.agent.select_bids(local_states)
+            # zero bids for infeasible devices to avoid invalid selections
+            bids = [b if m else 0.0 for b, m in zip(bids, mask)]
             step = env.step(bids)
             total_reward += step.team_reward
 
@@ -46,6 +48,8 @@ class MARLTrainer:
                 next_local_states=step.next_local_states,
                 next_global_state=step.next_global_state,
                 log_probs=log_probs,
+                means=means,
+                stds=stds,
                 bids=bids,
                 value=self.agent.value(global_state),
                 reward=step.team_reward,
@@ -92,7 +96,10 @@ class MARLTrainer:
                         batch["log_probs"],
                         batch["rewards"],
                         batch["dones"],
-                        batch.get("values"),
+                        values=batch.get("values"),
+                        means=batch.get("means"),
+                        stds=batch.get("stds"),
+                        action_masks=batch.get("action_masks"),
                     )
                     policy_losses.append(stats["policy_loss"])
                     value_losses.append(stats["value_loss"])
@@ -115,6 +122,9 @@ class MARLTrainer:
                 batch["log_probs"],
                 batch["rewards"],
                 batch["dones"],
-                batch.get("values"),
+                values=batch.get("values"),
+                means=batch.get("means"),
+                stds=batch.get("stds"),
+                action_masks=batch.get("action_masks"),
             )
             self.buffer.clear()

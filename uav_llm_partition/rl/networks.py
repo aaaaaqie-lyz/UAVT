@@ -271,24 +271,27 @@ class ContinuousPolicyNetwork:
     def _log_prob(self, mean: float, bid: float) -> float:
         bid_clamped = max(min(bid, 1.0 - 1e-6), 1e-6)
         var = self.std * self.std
-        return -0.5 * ((bid_clamped - mean) ** 2) / var - math.log(self.std * math.sqrt(2 * math.pi))
+        return -0.5 * ((bid_clamped - mean) ** 2) / var - 0.5 * math.log(2 * math.pi * var)
 
     def _entropy(self) -> float:
-        return 0.5 * math.log(2 * math.pi * math.e * self.std * self.std)
+        var = self.std * self.std
+        return 0.5 * (1.0 + math.log(2 * math.pi * var))
 
-    def get_action_and_log_prob(self, state: Sequence[float], deterministic: bool = False) -> tuple[float, float, float]:
+    def get_action_and_log_prob(
+        self, state: Sequence[float], deterministic: bool = False
+    ) -> tuple[float, float, float, float]:
         mean = self.forward(state)
         if deterministic:
             bid = mean
             log_prob = self._log_prob(mean, bid)
-            return bid, log_prob, self._entropy()
+            return bid, log_prob, self._entropy(), mean
 
         import random
 
         bid = random.gauss(mean, self.std)
         bid = max(0.0, min(1.0, bid))
         log_prob = self._log_prob(mean, bid)
-        return bid, log_prob, self._entropy()
+        return bid, log_prob, self._entropy(), mean
 
     def update(self, states, bids, advantages, lr: float = 1e-3, max_grad_norm: float = 0.5) -> None:
         """Policy gradient update using Gaussian log-prob with sigmoid mean."""

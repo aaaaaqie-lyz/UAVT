@@ -117,7 +117,7 @@ class MARLScheduler:
         )
 
         while env.block_idx < len(env.blocks):
-            bids, _, _ = self.agent.select_bids(local_states, deterministic=True)
+            bids, _, _, _ = self.agent.select_bids(local_states, deterministic=True)
             step = env.step(bids)
             if step.done:
                 break

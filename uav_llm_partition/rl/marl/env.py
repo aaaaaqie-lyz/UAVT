@@ -60,12 +60,12 @@ class MultiAgentResourceAllocationEnv:
         self.local_state_dim = 17
 
         # Reward/penalty knobs
-        self.migration_penalty_scale = 0.1
-        self.comm_penalty_scale = 0.1
+        self.migration_penalty_scale = 0.05
+        self.comm_penalty_scale = 0.05
         self.comp_penalty_scale = 0.05
         self.bid_weight = 2.0
         self.stability_bonus = 0.01
-        self.stability_margin = 0.01
+        self.stability_margin = 0.005
         self.queue_decay = 0.02
         self.queue_cap = 5.0
 
@@ -234,32 +234,42 @@ class MultiAgentResourceAllocationEnv:
         if not failed:
             self.assignment[block] = device
             demand = self.demands[block]
+            prev_comp = self.comp_used[device]
+            prev_mem = self.mem_used[device]
             self.comp_used[device] += demand.compute
             self.mem_used[device] += demand.memory
             comp_delay = demand.compute / (self.compute[device] + 1e-6)
             comm_delay = self._comm_delay(block, device)
             mig_cost = self._migration_cost(block, device)
-            stick_bonus = 0.0
-            if block in self.prev_assignment and self.prev_assignment[block] == device:
-                stick_bonus = self.stability_bonus
+            prev_load = max(prev_comp / (self.compute[device] + 1e-6), prev_mem / (self.memory[device] + 1e-6))
             load_ratio = max(
                 self.comp_used[device] / (self.compute[device] + 1e-6),
                 self.mem_used[device] / (self.memory[device] + 1e-6),
             )
+            improvement = max(prev_load - load_ratio, 0.0)
             self._update_queue(device, load_ratio)
             queue_penalty = min(self.queue[device] / self.queue_cap, 1.0)
-            raw_reward = (
-                1.0
-                - min(score_map.get(device, 0.0), 1.0)
-                - self.comm_penalty_scale * comm_delay
-                - self.comp_penalty_scale * comp_delay
-                - self.migration_penalty_scale * mig_cost
-                - queue_penalty
-                + stick_bonus
-            )
-            # amplify to avoid near-zero signals then clip for stability
-            team_reward = max(min(raw_reward * 4.0, 1.0), -1.0)
-            rewards = [team_reward for _ in range(self.num_agents)]
+            stick_bonus = self.stability_bonus if block in self.prev_assignment and self.prev_assignment[block] == device else 0.0
+            base_reward = 1.0 - min(score_map.get(device, 0.0), 1.0)
+            device_reward = base_reward
+            device_reward += 0.5 * improvement
+            device_reward -= self.comm_penalty_scale * comm_delay
+            device_reward -= self.comp_penalty_scale * comp_delay
+            device_reward -= self.migration_penalty_scale * mig_cost
+            device_reward -= queue_penalty
+            device_reward += stick_bonus
+            device_reward = max(min(device_reward * 2.0, 1.0), -1.0)
+            rewards[device] = device_reward
+            # encourage low-queue, low-load peers
+            for peer in range(self.num_agents):
+                if peer == device:
+                    continue
+                peer_load = max(
+                    self.comp_used[peer] / (self.compute[peer] + 1e-6),
+                    self.mem_used[peer] / (self.memory[peer] + 1e-6),
+                )
+                rewards[peer] = max(min(0.1 * (1.0 - peer_load) - 0.1 * min(self.queue[peer] / self.queue_cap, 1.0), 0.2), -0.2)
+            team_reward = sum(rewards) / max(self.num_agents, 1)
         else:
             # penalize everyone if no one could take the block
             team_reward = -0.5

@@ -47,22 +47,23 @@ class MAPPOAgent:
     def select_bids(
         self,
         local_states: Sequence[Sequence[float]],
-        deterministic: bool = True,
-    ) -> tuple[List[float], List[float], float]:
-        """Return bids in [0,1], their log-probabilities, and average entropy."""
+        deterministic: bool = False,
+    ) -> tuple[List[float], List[float], List[float], List[float]]:
+        """Return bids/log-probs/means/stds for each agent."""
 
         bids: List[float] = []
         log_probs: List[float] = []
-        entropies: List[float] = []
+        means: List[float] = []
+        stds: List[float] = []
         for agent_id, state in enumerate(local_states):
-            bid, log_prob, entropy = self.actors[agent_id].get_action_and_log_prob(
+            bid, log_prob, _, mean = self.actors[agent_id].get_action_and_log_prob(
                 state, deterministic=deterministic
             )
             bids.append(float(bid))
             log_probs.append(float(log_prob))
-            entropies.append(float(entropy))
-        avg_entropy = sum(entropies) / max(len(entropies), 1)
-        return bids, log_probs, avg_entropy
+            means.append(float(mean))
+            stds.append(float(self.actors[agent_id].std))
+        return bids, log_probs, means, stds
 
     def value(self, global_state: Sequence[float]) -> float:
         return self.critic.forward(global_state)
@@ -92,6 +93,9 @@ class MAPPOAgent:
         rewards: List[float],
         dones: List[bool],
         values: List[float] | None = None,
+        means: List[List[float]] | None = None,
+        stds: List[List[float]] | None = None,
+        action_masks: List[List[bool]] | None = None,
     ) -> dict:
         if not rewards:
             return {"policy_loss": 0.0, "value_loss": 0.0, "entropy": 0.0}
@@ -135,6 +139,8 @@ class MAPPOAgent:
                     adv = advantages[t]
                     ret = returns[t]
                     for agent_id, actor in enumerate(self.actors):
+                        if action_masks and not action_masks[t][agent_id]:
+                            continue
                         state = states[t][agent_id]
                         bid = bids[t][agent_id]
                         mean = actor.forward(state)
@@ -148,10 +154,10 @@ class MAPPOAgent:
                         policy_loss += -surrogate - self.cfg.entropy_coef * entropy_term
                         entropy_acc += entropy_term
 
-                        eff_adv = surrogate / max(ratio, 1e-6)
+                        clipped_adv = clipped_ratio * adv
                         per_agent_states[agent_id].append(state)
                         per_agent_bids[agent_id].append(bid)
-                        per_agent_advs[agent_id].append(eff_adv)
+                        per_agent_advs[agent_id].append(clipped_adv)
 
                     v_pred = self.value(global_states[t])
                     value_loss += (v_pred - ret) ** 2
