@@ -42,11 +42,11 @@ class ChannelModel:
                 ti, tj = device_types[i], device_types[j]
                 is_backbone = "cloud" in (ti, tj) or "edge" in (ti, tj)
                 if ti == "cloud" and tj == "cloud":
-                    bw_base = 100.0
+                    bw_base = 150.0
                 elif ("cloud" in (ti, tj)) and ("edge" in (ti, tj)):
-                    bw_base = 10.0
+                    bw_base = 15.0
                 elif is_backbone:
-                    bw_base = 1.0
+                    bw_base = 2.0
                 else:
                     bw_base = self.base_rate
 

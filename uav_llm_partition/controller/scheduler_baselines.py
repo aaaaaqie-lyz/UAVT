@@ -23,6 +23,7 @@ class BaseScheduler:
         self.comm_budget = comm_budget
         self.mig_overhead = mig_overhead
         self._rr_index = 0
+        self.type_penalty = {"uav": 0.0, "edge": 0.08, "cloud": 0.12}
 
     def _ratios(
         self,
@@ -38,6 +39,7 @@ class BaseScheduler:
         bandwidth: List[List[float]],
         comp_used: List[float],
         mem_used: List[float],
+        device_types: List[str],
     ) -> Tuple[float, float, float]:
         comp_ratio = (comp_used[device] + demand.compute) / max(compute[device], 1e-6)
         mem_ratio = (mem_used[device] + demand.memory) / max(memory[device], 1e-6)
@@ -55,7 +57,8 @@ class BaseScheduler:
             bw = bandwidth[device][neighbor_dev] + 1e-6
             comm_delay += size / bw
         comm_ratio = comm_delay / self.comm_budget
-        return comp_ratio, mem_ratio, comm_ratio
+        type_penalty = self.type_penalty.get(device_types[device], 0.0)
+        return comp_ratio, mem_ratio, comm_ratio + type_penalty
 
     def assign(
         self,
@@ -69,6 +72,7 @@ class BaseScheduler:
         dependencies: List[Tuple[Block, Block]],
         activation_sizes: Dict[Tuple[Block, Block], float],
         bandwidth: List[List[float]],
+        device_types: List[str] | None = None,
     ) -> SchedulerResult:
         raise NotImplementedError
 
@@ -88,6 +92,7 @@ class GreedyScheduler(BaseScheduler):
         dependencies: List[Tuple[Block, Block]],
         activation_sizes: Dict[Tuple[Block, Block], float],
         bandwidth: List[List[float]],
+        device_types: List[str] | None = None,
     ) -> SchedulerResult:
         assignment: Dict[Block, int] = {}
         comp_used = [0.0 for _ in compute]
@@ -95,6 +100,7 @@ class GreedyScheduler(BaseScheduler):
         migrations: List[Tuple[Block, int, int]] = []
         failed = False
         reason = ""
+        device_types = device_types or ["uav" for _ in compute]
 
         sorted_blocks = sorted(blocks, key=lambda b: (demands[b].memory, demands[b].compute), reverse=True)
         for blk in sorted_blocks:
@@ -114,6 +120,7 @@ class GreedyScheduler(BaseScheduler):
                     bandwidth,
                     comp_used,
                     mem_used,
+                    device_types,
                 )
                 base_score = max(comp_ratio, mem_ratio, comm_ratio)
                 if base_score > 1.0:
@@ -149,6 +156,7 @@ class MinLoadScheduler(BaseScheduler):
         dependencies: List[Tuple[Block, Block]],
         activation_sizes: Dict[Tuple[Block, Block], float],
         bandwidth: List[List[float]],
+        device_types: List[str] | None = None,
     ) -> SchedulerResult:
         assignment: Dict[Block, int] = {}
         comp_used = [0.0 for _ in compute]
@@ -175,6 +183,7 @@ class MinLoadScheduler(BaseScheduler):
                     bandwidth,
                     comp_used,
                     mem_used,
+                    device_types,
                 )
                 base_score = max(comp_ratio, mem_ratio, comm_ratio)
                 if base_score > 1.0:
@@ -214,6 +223,7 @@ class RoundRobinScheduler(BaseScheduler):
         dependencies: List[Tuple[Block, Block]],
         activation_sizes: Dict[Tuple[Block, Block], float],
         bandwidth: List[List[float]],
+        device_types: List[str] | None = None,
     ) -> SchedulerResult:
         assignment: Dict[Block, int] = {}
         comp_used = [0.0 for _ in compute]
@@ -221,6 +231,7 @@ class RoundRobinScheduler(BaseScheduler):
         migrations: List[Tuple[Block, int, int]] = []
         failed = False
         reason = ""
+        device_types = device_types or ["uav" for _ in compute]
 
         for blk in blocks:
             demand = demands[blk]
@@ -241,6 +252,7 @@ class RoundRobinScheduler(BaseScheduler):
                     bandwidth,
                     comp_used,
                     mem_used,
+                    device_types,
                 )
                 if max(comp_ratio, mem_ratio, comm_ratio) <= 1.0:
                     chosen = dev
@@ -275,6 +287,7 @@ class ResourceAwareGreedyScheduler(BaseScheduler):
         dependencies: List[Tuple[Block, Block]],
         activation_sizes: Dict[Tuple[Block, Block], float],
         bandwidth: List[List[float]],
+        device_types: List[str] | None = None,
     ) -> SchedulerResult:
         assignment: Dict[Block, int] = {}
         comp_used = [0.0 for _ in compute]
@@ -282,6 +295,7 @@ class ResourceAwareGreedyScheduler(BaseScheduler):
         migrations: List[Tuple[Block, int, int]] = []
         failed = False
         reason = ""
+        device_types = device_types or ["uav" for _ in compute]
 
         for blk in blocks:
             demand = demands[blk]
@@ -300,6 +314,7 @@ class ResourceAwareGreedyScheduler(BaseScheduler):
                     bandwidth,
                     comp_used,
                     mem_used,
+                    device_types,
                 )
                 weight_factor = 1.0 + max(weights[dev], 0.0)
                 base_score = max(comp_ratio, mem_ratio, comm_ratio) / weight_factor
@@ -340,10 +355,12 @@ class DPScheduler(BaseScheduler):
         dependencies: List[Tuple[Block, Block]],
         activation_sizes: Dict[Tuple[Block, Block], float],
         bandwidth: List[List[float]],
+        device_types: List[str] | None = None,
     ) -> SchedulerResult:
         State = Tuple[int, Tuple[float, ...], Tuple[float, ...], Dict[Block, int], List[Tuple[Block, int, int]]]
         initial: State = (0, tuple(0.0 for _ in compute), tuple(0.0 for _ in memory), {}, [])
         beam: List[State] = [initial]
+        device_types = device_types or ["uav" for _ in compute]
 
         for blk in blocks:
             demand = demands[blk]
@@ -365,6 +382,7 @@ class DPScheduler(BaseScheduler):
                         bandwidth,
                         comp_used,
                         mem_used,
+                        device_types,
                     )
                     base_score = max(comp_ratio, mem_ratio, comm_ratio)
                     if base_score > 1.0:

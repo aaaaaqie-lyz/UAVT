@@ -121,6 +121,7 @@ class SchedulerHeuristic:
         dependencies: List[Tuple[Block, Block]],
         activation_sizes: Dict[Tuple[Block, Block], float],
         bandwidth: List[List[float]],
+        device_types: List[str] | None = None,
     ) -> Tuple[Dict[Block, int], List[Tuple[Block, int, int]], bool, str]:
         assignment: Dict[Block, int] = {}
         migrations: List[Tuple[Block, int, int]] = []

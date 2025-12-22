@@ -71,6 +71,7 @@ class MultiAgentResourceAllocationEnv:
         self.stability_margin = 0.005
         self.queue_decay = 0.02
         self.queue_cap = 5.0
+        self.type_penalty = {"uav": 0.0, "edge": 0.08, "cloud": 0.12}
 
         self.num_agents = len(self.compute)
         self._max_compute = max(self.compute) if self.compute else 1.0
@@ -216,6 +217,7 @@ class MultiAgentResourceAllocationEnv:
             score = base_score * (1.0 + lyap_weight)
             score += self.migration_penalty_scale * mig_cost
             score += self.comm_penalty_scale * comm_delay
+            score += self.type_penalty.get(self.device_types[dev], 0.0)
             score -= self.bid_weight * bids[dev]
             scores[dev] = score
             if prev_dev is not None and dev == prev_dev:

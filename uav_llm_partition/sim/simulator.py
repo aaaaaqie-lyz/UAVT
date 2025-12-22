@@ -160,6 +160,7 @@ class Simulator:
                 dependencies=self.dependencies,
                 activation_sizes=activation_sizes,
                 bandwidth=bandwidth,
+                device_types=self.device_types,
             )
             if isinstance(result, tuple):
                 assignment, migrations, failed, failure_reason = result

@@ -34,6 +34,7 @@ class RLScheduler(BaseScheduler):
         dependencies: List[Tuple[Block, Block]],
         activation_sizes: Dict[Tuple[Block, Block], float],
         bandwidth: List[List[float]],
+        device_types: List[str] | None = None,
     ) -> SchedulerResult:
         if not blocks:
             return SchedulerResult({}, [], False, "")

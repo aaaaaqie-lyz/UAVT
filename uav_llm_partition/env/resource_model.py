@@ -26,9 +26,13 @@ class ResourceModel:
         memory: List[float] = []
         for dev_type in device_types:
             if dev_type == "cloud":
-                base_c, base_m = 1.0e14, 64.0
+                # Cloud nodes are intentionally over-provisioned to act as an
+                # upper bound for capacity while still letting the scheduler
+                # decide when to offload based on type-aware penalties.
+                base_c, base_m = 2.0e14, 96.0
             elif dev_type == "edge":
-                base_c, base_m = 1.0e12, 8.0
+                # Edge nodes are stronger than UAVs but weaker than cloud.
+                base_c, base_m = 2.0e12, 12.0
             else:
                 base_c, base_m = self.base_compute, self.base_memory
             comp = base_c * (1.0 + random.uniform(-self.noise, self.noise))

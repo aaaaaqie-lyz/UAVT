@@ -88,7 +88,10 @@ class MARLScheduler:
         dependencies: Sequence[Tuple[Block, Block]],
         activation_sizes: Dict[Tuple[Block, Block], float],
         bandwidth: Sequence[Sequence[float]],
+        device_types: Sequence[str] | None = None,
     ) -> SchedulerResult:
+        resolved_types = list(device_types) if device_types is not None else getattr(self, "device_types", ["uav" for _ in compute])
+
         env = MultiAgentResourceAllocationEnv(
             blocks=blocks,
             demands=demands,
@@ -102,7 +105,7 @@ class MARLScheduler:
             load_guard=self.load_guard,
             prev_assignment=prev_assignment,
             migration_overhead=self.mig_overhead,
-            device_types=getattr(self, "device_types", ["uav" for _ in compute]),
+            device_types=resolved_types,
         )
         local_states, global_state = env.reset()
 
