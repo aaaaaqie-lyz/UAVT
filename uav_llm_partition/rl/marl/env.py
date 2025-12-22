@@ -41,6 +41,7 @@ class MultiAgentResourceAllocationEnv:
         prev_assignment: Optional[Dict[Block, int]] = None,
         migration_overhead: float = 0.01,
         lyapunov_theta: float = 0.3,
+        device_types: Sequence[str] | None = None,
     ) -> None:
         self.blocks = list(blocks)
         self.demands = demands
@@ -55,9 +56,11 @@ class MultiAgentResourceAllocationEnv:
         self.prev_assignment = prev_assignment or {}
         self.migration_overhead = migration_overhead
         self.lyapunov_theta = lyapunov_theta
+        self.device_types = list(device_types) if device_types is not None else ["uav" for _ in compute]
 
         # Expected dimensions (base features + block features)
-        self.local_state_dim = 17
+        self.type_ids = [self._encode_type(t) for t in self.device_types]
+        self.local_state_dim = 18
 
         # Reward/penalty knobs
         self.migration_penalty_scale = 0.05
@@ -77,8 +80,12 @@ class MultiAgentResourceAllocationEnv:
         self._max_kv = max((d.kv_cache for d in self.demands.values()), default=1.0)
         self.max_layer = max((blk.layer for blk in self.blocks), default=0) + 1
         self.queue = [0.0 for _ in range(self.num_agents)]
-        self.global_state_dim = 6 * self.num_agents + 3
+        self.global_state_dim = 6 * self.num_agents + 6
         self.reset()
+
+    def _encode_type(self, dev_type: str) -> float:
+        mapping = {"uav": 0.0, "edge": 1.0, "cloud": 2.0}
+        return mapping.get(dev_type, 0.0) / 2.0
 
     # ------------------------------------------------------------------
     def reset(self) -> Tuple[List[List[float]], List[float]]:
@@ -305,6 +312,7 @@ class MultiAgentResourceAllocationEnv:
                 mem_ratio,
                 min(self.queue[dev] / self.queue_cap, 1.0),
                 self.weights[dev],
+                self.type_ids[dev],
             ]
             if current_block:
                 demand = self.demands[current_block]
@@ -342,6 +350,8 @@ class MultiAgentResourceAllocationEnv:
         state.extend(loads)
         queue_norm = [min(q / self.queue_cap, 1.0) for q in self.queue]
         state.extend(queue_norm)
+        type_counts = [self.device_types.count(t) / max(self.num_agents, 1) for t in ("uav", "edge", "cloud")]
+        state.extend(type_counts)
         state.append(sum(loads) / len(loads) if loads else 0.0)
         state.append(max(loads) if loads else 0.0)
         mean_q = sum(self.queue) / max(len(self.queue), 1)

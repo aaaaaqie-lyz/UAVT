@@ -102,6 +102,7 @@ class MARLScheduler:
             load_guard=self.load_guard,
             prev_assignment=prev_assignment,
             migration_overhead=self.mig_overhead,
+            device_types=getattr(self, "device_types", ["uav" for _ in compute]),
         )
         local_states, global_state = env.reset()
 

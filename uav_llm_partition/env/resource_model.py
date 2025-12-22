@@ -1,7 +1,7 @@
 """Resource model that provides compute and memory availability without numpy."""
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import List, Sequence, Tuple
 import random
 
 
@@ -11,8 +11,29 @@ class ResourceModel:
         self.base_memory = base_memory
         self.noise = noise
 
-    def sample(self, num_uav: int) -> Tuple[List[float], List[float]]:
-        compute = [self.base_compute * (1.0 + random.uniform(-self.noise, self.noise)) for _ in range(num_uav)]
-        memory = [self.base_memory * (1.0 + random.uniform(-self.noise, self.noise)) for _ in range(num_uav)]
+    def sample(self, device_types: Sequence[str] | int) -> Tuple[List[float], List[float]]:
+        """Return per-device compute/memory with heterogeneity by type.
+
+        The legacy signature accepted an integer ``num_uav``; to preserve
+        compatibility we still allow an ``int`` which is treated as that many
+        generic ``"uav"`` entries.
+        """
+
+        if isinstance(device_types, int):
+            device_types = ["uav" for _ in range(device_types)]
+
+        compute: List[float] = []
+        memory: List[float] = []
+        for dev_type in device_types:
+            if dev_type == "cloud":
+                base_c, base_m = 1.0e14, 64.0
+            elif dev_type == "edge":
+                base_c, base_m = 1.0e12, 8.0
+            else:
+                base_c, base_m = self.base_compute, self.base_memory
+            comp = base_c * (1.0 + random.uniform(-self.noise, self.noise))
+            mem = base_m * (1.0 + random.uniform(-self.noise, self.noise))
+            compute.append(comp)
+            memory.append(mem)
         return compute, memory
 

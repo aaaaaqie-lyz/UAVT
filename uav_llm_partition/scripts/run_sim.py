@@ -10,10 +10,24 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run UAV partition simulator")
     parser.add_argument("--scheduler", type=str, default="heuristic", help="scheduler type (heuristic|marl|rl|...)")
     parser.add_argument("--marl-model", type=str, default=None, help="path to a trained MARL model to load")
+    parser.add_argument(
+        "--topology",
+        type=str,
+        default=None,
+        help="Comma-separated device types (e.g. uav,uav,edge,cloud). Defaults to all UAVs.",
+    )
     args = parser.parse_args()
 
+    device_types = None
+    if args.topology:
+        device_types = [t.strip().lower() for t in args.topology.split(",") if t.strip()]
+        num_uav = len(device_types)
+    else:
+        num_uav = 4
+        device_types = ["uav" for _ in range(num_uav)]
+
     sim = Simulator(
-        num_uav=4,
+        num_uav=num_uav,
         num_layers=2,
         num_heads=4,
         hidden_size=1536,
@@ -23,6 +37,7 @@ def main() -> None:
         initial_seq_len=128,
         scheduler_type=args.scheduler,
         scheduler_model_path=args.marl_model,
+        device_types=device_types,
     )
     metrics = sim.run()
     summary = metrics.aggregate()

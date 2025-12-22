@@ -33,8 +33,8 @@ def main() -> None:
             use_lyapunov=False,
         )
         sim_positions, sim_mob = sim.mobility.update()
-        bandwidth, conn, los_score = sim.channel.compute(sim_positions)
-        compute, memory = sim.resource.sample(sim.num_uav)
+        bandwidth, conn, los_score = sim.channel.compute(sim_positions, sim.device_types)
+        compute, memory = sim.resource.sample(sim.device_types)
         demands = sim.demand_model.update_interval()
         activation_sizes = {(u, v): sim.demand_model.activation_size(u, v) for u, v in sim.dependencies}
         weights = sim.weights.compute(compute, memory, los_score, sim_mob)
@@ -44,6 +44,8 @@ def main() -> None:
     # Initialize a single env to infer dimensions
     sim, bandwidth, demands, activation_sizes, weights, compute, memory = _env_factory()
     scheduler: MARLScheduler = sim._create_scheduler("marl", "round_robin")  # type: ignore[attr-defined]
+    if scheduler:
+        scheduler.device_types = getattr(sim, "device_types", ["uav" for _ in range(sim.num_uav)])
     if scheduler:
         from uav_llm_partition.rl.marl.env import MultiAgentResourceAllocationEnv
         from uav_llm_partition.rl.marl.mappo import MAPPOAgent
@@ -62,6 +64,7 @@ def main() -> None:
                 activation_sizes,
                 prev_assignment={},
                 migration_overhead=scheduler.mig_overhead,
+                device_types=sim.device_types,
             )
 
         env_sample = _make_env()

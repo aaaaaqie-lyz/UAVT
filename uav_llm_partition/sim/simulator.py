@@ -47,10 +47,14 @@ class Simulator:
         layer_strategy: str = "round_robin",
         lyapunov_theta: float = 0.3,
         scheduler_model_path: str | None = None,
+        device_types: List[str] | None = None,
     ) -> None:
         self.num_uav = num_uav
+        self.device_types = device_types or ["uav" for _ in range(num_uav)]
+        if len(self.device_types) != self.num_uav:
+            raise ValueError("device_types length must match num_uav")
         self.intervals = intervals
-        self.mobility = MobilityModel(num_uav=num_uav)
+        self.mobility = MobilityModel(num_uav=num_uav, device_types=self.device_types)
         self.channel = ChannelModel(base_rate=0.02)
         self.resource = ResourceModel(base_compute=4.0e9, base_memory=0.05)
         self.weights = WeightManager()
@@ -69,6 +73,8 @@ class Simulator:
         self.layer_strategy = layer_strategy
         self.scheduler_model_path = scheduler_model_path
         self.scheduler = self._create_scheduler(scheduler_type, layer_strategy)
+        if hasattr(self.scheduler, "device_types"):
+            setattr(self.scheduler, "device_types", self.device_types)
         self.lyapunov = LyapunovQueue(num_uav=num_uav, theta=lyapunov_theta)
         self.rl_param = RLSchedulerParam()
         self.state_collector = StateCollector()
@@ -103,8 +109,8 @@ class Simulator:
 
     def run(self) -> MetricsLogger:
         positions, mobility_risk = self.mobility.update()
-        bandwidth, conn, los_score = self.channel.compute(positions)
-        compute, memory = self.resource.sample(self.num_uav)
+        bandwidth, conn, los_score = self.channel.compute(positions, self.device_types)
+        compute, memory = self.resource.sample(self.device_types)
         system_state = {
             "is_compute_bound": min(compute) < 0.8 * (sum(compute) / max(len(compute), 1)),
             "is_memory_bound": min(memory) < 0.8 * (sum(memory) / max(len(memory), 1)),
@@ -127,8 +133,8 @@ class Simulator:
 
         for t in range(self.intervals):
             positions, mobility_risk = self.mobility.update()
-            bandwidth, conn, los_score = self.channel.compute(positions)
-            compute, memory = self.resource.sample(self.num_uav)
+            bandwidth, conn, los_score = self.channel.compute(positions, self.device_types)
+            compute, memory = self.resource.sample(self.device_types)
             demands = self.demand_model.update_interval()
             activation_sizes = {(u, v): self.demand_model.activation_size(u, v) for u, v in self.dependencies}
             weights = self.weights.compute(compute, memory, los_score, mobility_risk)
@@ -244,10 +250,11 @@ class Simulator:
                 block_str = "[" + ",".join(block_desc) + "]"
                 device_lines.append(
                     (
-                        "d{idx}:delay={delay:.3f} load={load:.2f} comp={comp:.2f} mem={mem:.2f} q={q:.2f} "
+                        "d{idx}({dtype}):delay={delay:.3f} load={load:.2f} comp={comp:.2f} mem={mem:.2f} q={q:.2f} "
                         "layers={layers} blocks={blocks}"
                     ).format(
                         idx=idx,
+                        dtype=self.device_types[idx] if self.device_types else "uav",
                         delay=total_delay_by_dev[idx],
                         load=loads[idx],
                         comp=comp_ratio[idx],
