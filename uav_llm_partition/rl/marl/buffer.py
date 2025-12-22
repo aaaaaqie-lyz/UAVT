@@ -11,6 +11,7 @@ class MAPPOTransition:
     global_state: List[float]
     next_local_states: List[List[float]] | None
     next_global_state: List[float] | None
+    actions: List[float]
     bids: List[float]
     log_probs: List[float]
     means: List[float]
@@ -32,6 +33,7 @@ class MAPPOBuffer:
         global_state: List[float],
         next_local_states: List[List[float]] | None,
         next_global_state: List[float] | None,
+        actions: Sequence[float],
         bids: Sequence[float],
         log_probs: Sequence[float],
         means: Sequence[float],
@@ -48,6 +50,7 @@ class MAPPOBuffer:
                 global_state=list(global_state),
                 next_local_states=list(next_local_states) if next_local_states is not None else None,
                 next_global_state=list(next_global_state) if next_global_state is not None else None,
+                actions=list(actions),
                 bids=list(bids),
                 log_probs=list(log_probs),
                 means=list(means),
@@ -71,6 +74,7 @@ class MAPPOBuffer:
         next_local_states = [t.next_local_states for t in self.transitions]
         next_global_states = [t.next_global_state for t in self.transitions]
         bids = [t.bids for t in self.transitions]
+        actions = [t.actions for t in self.transitions]
         log_probs = [t.log_probs for t in self.transitions]
         means = [t.means for t in self.transitions]
         stds = [t.stds for t in self.transitions]
@@ -85,6 +89,7 @@ class MAPPOBuffer:
             "next_local_states": next_local_states,
             "next_global_states": next_global_states,
             "bids": bids,
+            "actions": actions,
             "log_probs": log_probs,
             "means": means,
             "stds": stds,

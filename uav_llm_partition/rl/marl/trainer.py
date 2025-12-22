@@ -47,6 +47,7 @@ class MARLTrainer:
                 global_state=global_state,
                 next_local_states=step.next_local_states,
                 next_global_state=step.next_global_state,
+                actions=bids,
                 log_probs=log_probs,
                 means=means,
                 stds=stds,

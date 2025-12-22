@@ -269,7 +269,12 @@ class MultiAgentResourceAllocationEnv:
                     self.mem_used[peer] / (self.memory[peer] + 1e-6),
                 )
                 rewards[peer] = max(min(0.1 * (1.0 - peer_load) - 0.1 * min(self.queue[peer] / self.queue_cap, 1.0), 0.2), -0.2)
-            team_reward = sum(rewards) / max(self.num_agents, 1)
+            loads = [
+                max(c / (cap + 1e-6), m / (mem + 1e-6))
+                for c, cap, m, mem in zip(self.comp_used, self.compute, self.mem_used, self.memory)
+            ]
+            fairness_bonus = 0.1 * (1.0 - max(loads)) if loads else 0.0
+            team_reward = sum(rewards) + fairness_bonus
         else:
             # penalize everyone if no one could take the block
             team_reward = -0.5
