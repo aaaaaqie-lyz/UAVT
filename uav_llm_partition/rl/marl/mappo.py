@@ -69,19 +69,17 @@ class MAPPOAgent:
         return self.critic.forward(global_state)
 
     def _compute_gae(
-        self, rewards: List[float], values: List[float], dones: List[bool]
+        self, rewards: List[float], values: List[float], next_values: List[float], dones: List[bool]
     ) -> tuple[List[float], List[float]]:
         advantages: List[float] = []
         returns: List[float] = []
         gae = 0.0
-        next_value = 0.0
         for t in reversed(range(len(rewards))):
             mask = 0.0 if dones[t] else 1.0
-            delta = rewards[t] + self.cfg.gamma * next_value * mask - values[t]
+            delta = rewards[t] + self.cfg.gamma * next_values[t] * mask - values[t]
             gae = delta + self.cfg.gamma * self.cfg.gae_lambda * gae * mask
             advantages.insert(0, gae)
             returns.insert(0, gae + values[t])
-            next_value = values[t]
         return advantages, returns
 
     def learn(
@@ -93,6 +91,7 @@ class MAPPOAgent:
         rewards: List[float],
         dones: List[bool],
         values: List[float] | None = None,
+        next_values: List[float] | None = None,
         means: List[List[float]] | None = None,
         stds: List[List[float]] | None = None,
         action_masks: List[List[bool]] | None = None,
@@ -107,7 +106,9 @@ class MAPPOAgent:
 
         if values is None:
             values = [self.value(gs) for gs in global_states]
-        advantages, returns = self._compute_gae(rewards, values, dones)
+        if next_values is None:
+            next_values = [0.0 for _ in values]
+        advantages, returns = self._compute_gae(rewards, values, next_values, dones)
         returns = [max(min(ret, 10.0), -10.0) for ret in returns]
 
         mean_adv = sum(advantages) / max(len(advantages), 1)

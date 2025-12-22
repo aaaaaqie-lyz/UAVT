@@ -274,7 +274,7 @@ class MultiAgentResourceAllocationEnv:
                 for c, cap, m, mem in zip(self.comp_used, self.compute, self.mem_used, self.memory)
             ]
             fairness_bonus = 0.1 * (1.0 - max(loads)) if loads else 0.0
-            team_reward = sum(rewards) + fairness_bonus
+            team_reward = (sum(rewards) / max(len(rewards), 1)) + fairness_bonus
         else:
             # penalize everyone if no one could take the block
             team_reward = -0.5

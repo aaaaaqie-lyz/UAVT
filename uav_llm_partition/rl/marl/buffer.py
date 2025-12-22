@@ -17,6 +17,7 @@ class MAPPOTransition:
     means: List[float]
     stds: List[float]
     value: float
+    next_value: float
     reward: float  # team reward
     rewards_by_agent: List[float]
     action_mask: List[bool]
@@ -39,6 +40,7 @@ class MAPPOBuffer:
         means: Sequence[float],
         stds: Sequence[float],
         value: float,
+        next_value: float,
         reward: float,
         rewards_by_agent: Sequence[float],
         action_mask: Sequence[bool],
@@ -56,6 +58,7 @@ class MAPPOBuffer:
                 means=list(means),
                 stds=list(stds),
                 value=float(value),
+                next_value=float(next_value),
                 reward=float(reward),
                 rewards_by_agent=list(rewards_by_agent),
                 action_mask=list(action_mask),
@@ -79,6 +82,7 @@ class MAPPOBuffer:
         means = [t.means for t in self.transitions]
         stds = [t.stds for t in self.transitions]
         values = [t.value for t in self.transitions]
+        next_values = [t.next_value for t in self.transitions]
         rewards = [t.reward for t in self.transitions]
         rewards_by_agent = [t.rewards_by_agent for t in self.transitions]
         action_masks = [t.action_mask for t in self.transitions]
@@ -94,6 +98,7 @@ class MAPPOBuffer:
             "means": means,
             "stds": stds,
             "values": values,
+            "next_values": next_values,
             "rewards": rewards,
             "rewards_by_agent": rewards_by_agent,
             "action_masks": action_masks,

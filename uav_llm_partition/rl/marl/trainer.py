@@ -42,6 +42,9 @@ class MARLTrainer:
             step = env.step(bids)
             total_reward += step.team_reward
 
+            value = self.agent.value(global_state)
+            next_value = 0.0 if step.done or step.next_global_state is None else self.agent.value(step.next_global_state)
+
             self.buffer.add(
                 local_states=local_states,
                 global_state=global_state,
@@ -52,7 +55,8 @@ class MARLTrainer:
                 means=means,
                 stds=stds,
                 bids=bids,
-                value=self.agent.value(global_state),
+                value=value,
+                next_value=next_value,
                 reward=step.team_reward,
                 rewards_by_agent=step.rewards,
                 action_mask=mask,
@@ -90,14 +94,19 @@ class MARLTrainer:
                 rollout_counter += 1
                 if rollout_counter % update_every == 0:
                     batch = self.buffer.as_batch()
+                    rewards = [
+                        sum(r_agent) / max(len(r_agent), 1)
+                        for r_agent in batch.get("rewards_by_agent", [])
+                    ]
                     stats = self.agent.learn(
                         batch["local_states"],
                         batch["global_states"],
                         batch["bids"],
                         batch["log_probs"],
-                        batch["rewards"],
+                        rewards or batch["rewards"],
                         batch["dones"],
                         values=batch.get("values"),
+                        next_values=batch.get("next_values"),
                         means=batch.get("means"),
                         stds=batch.get("stds"),
                         action_masks=batch.get("action_masks"),
@@ -116,14 +125,16 @@ class MARLTrainer:
         # Final flush if buffer still has rollouts
         if self.buffer.transitions:
             batch = self.buffer.as_batch()
+            rewards = [sum(r_agent) / max(len(r_agent), 1) for r_agent in batch.get("rewards_by_agent", [])]
             self.agent.learn(
                 batch["local_states"],
                 batch["global_states"],
                 batch["bids"],
                 batch["log_probs"],
-                batch["rewards"],
+                rewards or batch["rewards"],
                 batch["dones"],
                 values=batch.get("values"),
+                next_values=batch.get("next_values"),
                 means=batch.get("means"),
                 stds=batch.get("stds"),
                 action_masks=batch.get("action_masks"),
