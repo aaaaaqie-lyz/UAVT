@@ -144,14 +144,21 @@ class MAPPOAgent:
                             continue
                         state = states[t][agent_id]
                         bid = bids[t][agent_id]
-                        mean = actor.forward(state)
-                        new_log_prob = actor._log_prob(mean, bid)
-                        ratio = math.exp(new_log_prob - old_log_probs[t][agent_id])
+                        new_mean = actor.forward(state)
+                        old_mean = means[t][agent_id] if means else new_mean
+                        old_std = stds[t][agent_id] if stds else actor.std
+                        old_log_prob = (
+                            old_log_probs[t][agent_id]
+                            if old_log_probs and old_log_probs[t]
+                            else actor._log_prob(old_mean, bid)
+                        )
+                        new_log_prob = actor._log_prob(new_mean, bid)
+                        ratio = math.exp(new_log_prob - old_log_prob)
                         clipped_ratio = max(1.0 - self.cfg.clip_epsilon, min(1.0 + self.cfg.clip_epsilon, ratio))
                         surr1 = ratio * adv
                         surr2 = clipped_ratio * adv
                         surrogate = min(surr1, surr2) if adv >= 0 else max(surr1, surr2)
-                        entropy_term = actor._entropy()
+                        entropy_term = ContinuousPolicyNetwork.entropy_from_std(old_std)
                         policy_loss += -surrogate - self.cfg.entropy_coef * entropy_term
                         entropy_acc += entropy_term
 

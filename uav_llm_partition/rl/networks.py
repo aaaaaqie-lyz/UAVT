@@ -273,8 +273,21 @@ class ContinuousPolicyNetwork:
         var = self.std * self.std
         return -0.5 * ((bid_clamped - mean) ** 2) / var - 0.5 * math.log(2 * math.pi * var)
 
+    @staticmethod
+    def log_prob_from_params(mean: float, std: float, bid: float) -> float:
+        """Compute Gaussian log-prob using explicit mean/std for ratio math."""
+
+        bid_clamped = max(min(bid, 1.0 - 1e-6), 1e-6)
+        var = std * std
+        return -0.5 * ((bid_clamped - mean) ** 2) / (var + 1e-8) - 0.5 * math.log(2 * math.pi * (var + 1e-8))
+
     def _entropy(self) -> float:
         var = self.std * self.std
+        return 0.5 * (1.0 + math.log(2 * math.pi * var))
+
+    @staticmethod
+    def entropy_from_std(std: float) -> float:
+        var = std * std
         return 0.5 * (1.0 + math.log(2 * math.pi * var))
 
     def get_action_and_log_prob(
