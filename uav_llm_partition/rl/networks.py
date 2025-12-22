@@ -246,7 +246,13 @@ class ContinuousPolicyNetwork:
             for i in range(len(dims) - 1)
         ]
         self.biases = [[0.0 for _ in range(dims[i + 1])] for i in range(len(dims) - 1)]
-        self.std = std
+        # keep a floor on std to avoid entropy collapse
+        self.std = max(std, 0.05)
+
+    def _eff_std(self) -> float:
+        """Return a floor-capped std for log-prob/entropy math."""
+
+        return max(self.std, 0.05)
 
     # -----------------------------
     # Forward / sampling
@@ -270,7 +276,7 @@ class ContinuousPolicyNetwork:
 
     def _log_prob(self, mean: float, bid: float) -> float:
         bid_clamped = max(min(bid, 1.0 - 1e-6), 1e-6)
-        var = self.std * self.std
+        var = self._eff_std() ** 2
         return -0.5 * ((bid_clamped - mean) ** 2) / var - 0.5 * math.log(2 * math.pi * var)
 
     @staticmethod
@@ -278,11 +284,11 @@ class ContinuousPolicyNetwork:
         """Compute Gaussian log-prob using explicit mean/std for ratio math."""
 
         bid_clamped = max(min(bid, 1.0 - 1e-6), 1e-6)
-        var = std * std
+        var = max(std, 0.05) ** 2
         return -0.5 * ((bid_clamped - mean) ** 2) / (var + 1e-8) - 0.5 * math.log(2 * math.pi * (var + 1e-8))
 
     def _entropy(self) -> float:
-        var = self.std * self.std
+        var = self._eff_std() ** 2
         return 0.5 * (1.0 + math.log(2 * math.pi * var))
 
     @staticmethod

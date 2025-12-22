@@ -18,6 +18,7 @@ class MAPPOConfig:
     clip_epsilon: float = 0.2
     value_coef: float = 0.5
     entropy_coef: float = 0.05
+    entropy_decay: float = 0.99
     lr: float = 3e-4
     value_lr_scale: float = 0.25
     ppo_epochs: int = 6
@@ -119,6 +120,7 @@ class MAPPOAgent:
         total_policy_loss = 0.0
         total_value_loss = 0.0
         total_entropy = 0.0
+        total_kl = 0.0
 
         indices = list(range(len(states)))
         import random
@@ -150,9 +152,9 @@ class MAPPOAgent:
                         old_log_prob = (
                             old_log_probs[t][agent_id]
                             if old_log_probs and old_log_probs[t]
-                            else actor._log_prob(old_mean, bid)
+                            else ContinuousPolicyNetwork.log_prob_from_params(old_mean, old_std, bid)
                         )
-                        new_log_prob = actor._log_prob(new_mean, bid)
+                        new_log_prob = ContinuousPolicyNetwork.log_prob_from_params(new_mean, actor.std, bid)
                         ratio = math.exp(new_log_prob - old_log_prob)
                         clipped_ratio = max(1.0 - self.cfg.clip_epsilon, min(1.0 + self.cfg.clip_epsilon, ratio))
                         surr1 = ratio * adv
@@ -161,6 +163,7 @@ class MAPPOAgent:
                         entropy_term = ContinuousPolicyNetwork.entropy_from_std(old_std)
                         policy_loss += -surrogate - self.cfg.entropy_coef * entropy_term
                         entropy_acc += entropy_term
+                        total_kl += max(old_log_prob - new_log_prob, 0.0)
 
                         clipped_adv = clipped_ratio * adv
                         per_agent_states[agent_id].append(state)
@@ -188,10 +191,13 @@ class MAPPOAgent:
                 total_entropy += entropy_acc / steps_count
 
         updates = max((len(indices) / batch_size) * self.cfg.ppo_epochs, 1.0)
+        # mild entropy annealing to encourage early exploration and late exploitation
+        self.cfg.entropy_coef = max(self.cfg.entropy_coef * self.cfg.entropy_decay, 0.005)
         return {
             "policy_loss": total_policy_loss / updates,
             "value_loss": total_value_loss / updates,
             "entropy": total_entropy / updates,
+            "kl": total_kl / updates,
         }
 
     # -----------------------------
