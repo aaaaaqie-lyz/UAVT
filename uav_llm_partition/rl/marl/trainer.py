@@ -94,10 +94,7 @@ class MARLTrainer:
                 rollout_counter += 1
                 if rollout_counter % update_every == 0:
                     batch = self.buffer.as_batch()
-                    rewards = [
-                        sum(r_agent) / max(len(r_agent), 1)
-                        for r_agent in batch.get("rewards_by_agent", [])
-                    ]
+                    rewards = [sum(r_agent) for r_agent in batch.get("rewards_by_agent", [])]
                     stats = self.agent.learn(
                         batch["local_states"],
                         batch["global_states"],
@@ -125,7 +122,7 @@ class MARLTrainer:
         # Final flush if buffer still has rollouts
         if self.buffer.transitions:
             batch = self.buffer.as_batch()
-            rewards = [sum(r_agent) / max(len(r_agent), 1) for r_agent in batch.get("rewards_by_agent", [])]
+            rewards = [sum(r_agent) for r_agent in batch.get("rewards_by_agent", [])]
             self.agent.learn(
                 batch["local_states"],
                 batch["global_states"],

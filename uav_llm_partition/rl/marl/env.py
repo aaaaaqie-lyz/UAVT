@@ -71,7 +71,9 @@ class MultiAgentResourceAllocationEnv:
         self.stability_margin = 0.005
         self.queue_decay = 0.02
         self.queue_cap = 5.0
-        self.type_penalty = {"uav": 0.0, "edge": 0.08, "cloud": 0.12}
+        # Penalise non-UAV targets more aggressively so bids must offset the
+        # stronger edge/cloud capacity and keep a UAV-first bias.
+        self.type_penalty = {"uav": 0.0, "edge": 0.2, "cloud": 0.35}
 
         self.num_agents = len(self.compute)
         self._max_compute = max(self.compute) if self.compute else 1.0
@@ -283,7 +285,9 @@ class MultiAgentResourceAllocationEnv:
                 for c, cap, m, mem in zip(self.comp_used, self.compute, self.mem_used, self.memory)
             ]
             fairness_bonus = 0.1 * (1.0 - max(loads)) if loads else 0.0
-            team_reward = (sum(rewards) / max(len(rewards), 1)) + fairness_bonus
+            # Use summed rewards to avoid over-averaging the signal; a small
+            # fairness bonus keeps max-load in the loop.
+            team_reward = sum(rewards) + fairness_bonus
         else:
             # penalize everyone if no one could take the block
             team_reward = -0.5

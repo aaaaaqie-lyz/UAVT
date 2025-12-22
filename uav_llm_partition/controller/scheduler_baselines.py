@@ -23,7 +23,8 @@ class BaseScheduler:
         self.comm_budget = comm_budget
         self.mig_overhead = mig_overhead
         self._rr_index = 0
-        self.type_penalty = {"uav": 0.0, "edge": 0.08, "cloud": 0.12}
+        # Bias placements toward UAVs even when edge/cloud are resource-rich.
+        self.type_penalty = {"uav": 0.0, "edge": 0.2, "cloud": 0.35}
 
     def _ratios(
         self,
