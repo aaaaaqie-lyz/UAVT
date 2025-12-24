@@ -4,7 +4,7 @@ comm_penalty_scale: float = 0.05
 migration_penalty_scale: float = 0.05
 mig_overhead: float = 0.01
 
-type_penalty = {"uav": 0.0, "edge": 0.2, "cloud": 0.35}
+type_penalty = {"uav": 0.0, "edge": 0.6, "cloud": 1.0}
 
 lyap_to_weight_factor: float = 0.1
 lyap_weight_clip: float = 3.0
