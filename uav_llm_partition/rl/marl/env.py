@@ -78,6 +78,16 @@ class MultiAgentResourceAllocationEnv:
         self.bid_weight = 2.0
         self.stability_bonus = stability_bonus
         self.stability_margin = stability_margin
+        self.queue_threshold = 0.6
+        self.delay_norm = 1.0
+        self.comm_norm = 1.0
+        self.comp_norm = 1.0
+        self.mig_norm = 1.0
+        self.max_load_weight = 0.4
+        self.queue_weight = 0.3
+        self.queue_drift_weight = 0.2
+        self.failure_penalty = 2.0
+        self.team_mix = 0.3
         self.queue_decay = 0.02
         self.queue_cap = 5.0
         # Penalise non-UAV targets more aggressively so bids must offset the
@@ -213,6 +223,11 @@ class MultiAgentResourceAllocationEnv:
         self.queue[dev] = max(min(new_q, self.queue_cap), 0.0)
         self.lyapunov[dev] = self.queue[dev]
 
+    def _norm(self, value: float, scale: float) -> float:
+        if scale <= 0:
+            return 0.0
+        return min(max(value / scale, 0.0), 1.0)
+
     def _choose_device(self, block: Block, bids: Sequence[float]) -> Tuple[Optional[int], Dict[int, float]]:
         scores: Dict[int, float] = {}
         prev_dev = self.prev_assignment.get(block)
@@ -256,6 +271,7 @@ class MultiAgentResourceAllocationEnv:
             demand = self.demands[block]
             prev_comp = self.comp_used[device]
             prev_mem = self.mem_used[device]
+            prev_queue = self.queue[device]
             self.comp_used[device] += demand.compute
             self.mem_used[device] += demand.memory
             comp_delay = demand.compute / (self.compute[device] + 1e-6)
@@ -268,18 +284,21 @@ class MultiAgentResourceAllocationEnv:
             )
             improvement = max(prev_load - load_ratio, 0.0)
             self._update_queue(device, load_ratio)
-            queue_penalty = min(self.queue[device] / self.queue_cap, 1.0)
+            queue_penalty = max(self.queue[device] / max(self.queue_cap, 1.0) - self.queue_threshold, 0.0)
+            queue_drift = max(self.queue[device] - prev_queue, 0.0)
             stick_bonus = self.stability_bonus if block in self.prev_assignment and self.prev_assignment[block] == device else 0.0
             base_reward = 1.0 - min(score_map.get(device, 0.0), 1.0)
-            device_reward = base_reward
+            comm_term = self._norm(comm_delay, self.comm_norm)
+            comp_term = self._norm(comp_delay, self.comp_norm)
+            mig_term = self._norm(mig_cost, self.mig_norm)
+            device_reward = -self._norm(comp_delay + comm_delay, self.delay_norm)
+            device_reward -= self.comm_penalty_scale * comm_term
+            device_reward -= self.comp_penalty_scale * comp_term
+            device_reward -= self.migration_penalty_scale * mig_term
+            device_reward -= self.queue_weight * min(queue_penalty, 1.0)
+            device_reward -= self.queue_drift_weight * min(queue_drift / max(self.queue_cap, 1.0), 1.0)
             device_reward += 0.5 * improvement
-            device_reward -= self.comm_penalty_scale * comm_delay
-            device_reward -= self.comp_penalty_scale * comp_delay
-            device_reward -= self.migration_penalty_scale * mig_cost
-            device_reward -= queue_penalty
             device_reward += stick_bonus
-            device_reward = max(min(device_reward * 2.0, 1.0), -1.0)
-            rewards[device] = device_reward
             # encourage low-queue, low-load peers
             for peer in range(self.num_agents):
                 if peer == device:
@@ -288,21 +307,27 @@ class MultiAgentResourceAllocationEnv:
                     self.comp_used[peer] / (self.compute[peer] + 1e-6),
                     self.mem_used[peer] / (self.memory[peer] + 1e-6),
                 )
-                rewards[peer] = max(min(0.1 * (1.0 - peer_load) - 0.1 * min(self.queue[peer] / self.queue_cap, 1.0), 0.2), -0.2)
+                peer_queue = min(self.queue[peer] / max(self.queue_cap, 1.0), 1.0)
+                rewards[peer] = 0.2 * (1.0 - peer_load) - 0.2 * peer_queue
             loads = [
                 max(c / (cap + 1e-6), m / (mem + 1e-6))
                 for c, cap, m, mem in zip(self.comp_used, self.compute, self.mem_used, self.memory)
             ]
-            fairness_bonus = 0.1 * (1.0 - max(loads)) if loads else 0.0
-            # Use summed rewards to avoid over-averaging the signal; a small
-            # fairness bonus keeps max-load in the loop.
-            team_reward = sum(rewards) + fairness_bonus
+            max_load = max(loads) if loads else 0.0
+            fairness_bonus = 0.1 * (1.0 - max_load) if loads else 0.0
+            team_reward = sum(rewards) / max(self.num_agents, 1)
+            team_reward -= self.max_load_weight * max_load
+            team_reward += fairness_bonus
+            rewards[device] = device_reward
+            team_reward = max(min(team_reward, 1.0), -1.0)
         else:
             # penalize everyone if no one could take the block
-            team_reward = -0.5
+            team_reward = -self.failure_penalty
             rewards = [team_reward for _ in range(self.num_agents)]
         if failed:
             team_reward = rewards[0] if rewards else -0.5
+        rewards = [((1.0 - self.team_mix) * r + self.team_mix * team_reward) for r in rewards]
+        rewards = [max(min(r, 1.0), -1.0) for r in rewards]
 
         self.block_idx += 1
         done = self.block_idx >= len(self.blocks)
