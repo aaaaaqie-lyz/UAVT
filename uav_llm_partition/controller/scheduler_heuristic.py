@@ -138,10 +138,79 @@ class SchedulerHeuristic:
 
         return kept, comp_used, mem_used, pending
 
-    def _score(self, base_score: float, lyapunov: float, load_term: float, global_load: float) -> float:
+    def _score(
+        self,
+        base_score: float,
+        lyapunov: float,
+        load_term: float,
+        global_load: float,
+        load_bias: float | None = None,
+        global_bias: float | None = None,
+    ) -> float:
         queue = max(lyapunov, 0.0)
         lyap_weight = min(queue * lyap_to_weight_factor, lyap_weight_clip)
-        return base_score * (1.0 + lyap_weight) + self.load_balance_bias * load_term + self.global_load_bias * global_load
+        load_weight = self.load_balance_bias if load_bias is None else load_bias
+        global_weight = self.global_load_bias if global_bias is None else global_bias
+        return base_score * (1.0 + lyap_weight) + load_weight * load_term + global_weight * global_load
+
+    def _rebalance_overload(
+        self,
+        assignment: Dict[Block, int],
+        demands: Dict[Block, BlockDemand],
+        compute: List[float],
+        memory: List[float],
+        prev_assignment: Dict[Block, int],
+        dependencies: List[Tuple[Block, Block]],
+        activation_sizes: Dict[Tuple[Block, Block], float],
+        bandwidth: List[List[float]],
+        device_types: List[str] | None,
+        comp_used: List[float],
+        mem_used: List[float],
+        migrations: List[Tuple[Block, int, int]],
+    ) -> None:
+        """Move heavy blocks off the most loaded device when possible."""
+
+        if not assignment:
+            return
+        loads = [
+            max(c / max(cap, 1e-6), m / max(mem, 1e-6))
+            for c, cap, m, mem in zip(comp_used, compute, mem_used, memory)
+        ]
+        max_dev = max(range(len(loads)), key=loads.__getitem__)
+        min_dev = min(range(len(loads)), key=loads.__getitem__)
+        if loads[max_dev] <= self.load_guard and loads[max_dev] - loads[min_dev] < 0.1:
+            return
+        candidates = [blk for blk, dev in assignment.items() if dev == max_dev]
+        if not candidates:
+            return
+        candidates.sort(key=lambda b: demands[b].memory + demands[b].compute, reverse=True)
+        for blk in candidates[:3]:
+            demand = demands[blk]
+            comp_ratio, mem_ratio, comm_ratio = self._ratios(
+                blk,
+                demand,
+                min_dev,
+                compute,
+                memory,
+                assignment,
+                prev_assignment,
+                dependencies,
+                activation_sizes,
+                bandwidth,
+                comp_used,
+                mem_used,
+            )
+            base_score = max(comp_ratio, mem_ratio, comm_ratio)
+            if base_score > 1.0:
+                continue
+            assignment[blk] = min_dev
+            comp_used[max_dev] -= demand.compute
+            mem_used[max_dev] -= demand.memory
+            comp_used[min_dev] += demand.compute
+            mem_used[min_dev] += demand.memory
+            if blk in prev_assignment and prev_assignment[blk] != min_dev:
+                migrations.append((blk, prev_assignment[blk], min_dev))
+            break
 
     def _migration_penalty(
         self,
@@ -247,7 +316,15 @@ class SchedulerHeuristic:
                     and (not will_migrate or len(migrations) < self.migration_budget)
                     and (not will_migrate or migration_volume + mig_volume <= self.migration_volume_budget)
                 )
-                final_score = self._score(base_score, queue_pressure, load_term, global_load)
+                imbalance = max(
+                    max(comp_used) / max(max(compute), 1e-6),
+                    max(mem_used) / max(max(memory), 1e-6),
+                ) - min(
+                    min(comp_used) / max(min(compute), 1e-6),
+                    min(mem_used) / max(min(memory), 1e-6),
+                )
+                load_bias = self.load_balance_bias * (1.0 + max(imbalance, 0.0))
+                final_score = self._score(base_score, queue_pressure, load_term, global_load, load_bias=load_bias)
                 final_score += comm_penalty_scale * comm_ratio
                 final_score += migration_penalty_scale * mig_penalty
                 dev_type = device_types[dev] if device_types is not None and dev < len(device_types) else "uav"
@@ -334,4 +411,18 @@ class SchedulerHeuristic:
             failure_reason = "migration_budget"
         if failed and not failure_reason:
             failure_reason = "constraint"
+        self._rebalance_overload(
+            assignment,
+            demands,
+            compute,
+            memory,
+            prev_assignment,
+            dependencies,
+            activation_sizes,
+            bandwidth,
+            device_types,
+            comp_used,
+            mem_used,
+            migrations,
+        )
         return assignment, migrations, failed, failure_reason
