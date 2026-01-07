@@ -16,6 +16,7 @@ def main() -> None:
         default=None,
         help="Comma-separated device types (e.g. uav,uav,edge,cloud). Defaults to all UAVs.",
     )
+    parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducible runs")
     args = parser.parse_args()
 
     device_types = None
@@ -38,6 +39,7 @@ def main() -> None:
         scheduler_type=args.scheduler,
         scheduler_model_path=args.marl_model,
         device_types=device_types,
+        seed=args.seed,
     )
     metrics = sim.run()
     summary = metrics.aggregate()
@@ -75,4 +77,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Dict, List, Tuple
+import random
 
 from uav_llm_partition.controller.lyapunov import LyapunovQueue
 from uav_llm_partition.controller.scheduler_heuristic import SchedulerHeuristic
@@ -48,11 +49,15 @@ class Simulator:
         lyapunov_theta: float = 0.3,
         scheduler_model_path: str | None = None,
         device_types: List[str] | None = None,
+        seed: int | None = None,
     ) -> None:
         self.num_uav = num_uav
         self.device_types = device_types or ["uav" for _ in range(num_uav)]
         if len(self.device_types) != self.num_uav:
             raise ValueError("device_types length must match num_uav")
+        self.seed = seed
+        if seed is not None:
+            random.seed(seed)
         self.intervals = intervals
         self.mobility = MobilityModel(num_uav=num_uav, device_types=self.device_types)
         self.channel = ChannelModel(base_rate=0.02)
