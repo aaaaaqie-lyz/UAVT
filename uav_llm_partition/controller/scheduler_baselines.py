@@ -47,6 +47,7 @@ class BaseScheduler:
         dependencies: List[Tuple[Block, Block]],
         activation_sizes: Dict[Tuple[Block, Block], float],
         bandwidth: List[List[float]],
+        latency: List[List[float]] | None,
         comp_used: List[float],
         mem_used: List[float],
         device_types: List[str],
@@ -65,7 +66,7 @@ class BaseScheduler:
                 continue
             size = activation_sizes.get((up, down), activation_sizes.get((down, up), 0.0))
             bw = bandwidth[device][neighbor_dev] + 1e-6
-            comm_delay += size / bw
+            comm_delay += size / bw + (latency[device][neighbor_dev] if latency else 0.0)
         comm_ratio = comm_delay / self.comm_budget
         type_penalty = self.type_penalty.get(device_types[device], 0.0)
         return comp_ratio, mem_ratio, comm_ratio + type_penalty
@@ -82,6 +83,7 @@ class BaseScheduler:
         dependencies: List[Tuple[Block, Block]],
         activation_sizes: Dict[Tuple[Block, Block], float],
         bandwidth: List[List[float]],
+        latency: List[List[float]] | None,
         comp_used: List[float],
         mem_used: List[float],
     ) -> Tuple[float, float, float, float]:
@@ -99,7 +101,7 @@ class BaseScheduler:
                 continue
             size = activation_sizes.get((up, down), activation_sizes.get((down, up), 0.0))
             bw = bandwidth[device][neighbor_dev] + 1e-6
-            comm_delay += size / bw
+            comm_delay += size / bw + (latency[device][neighbor_dev] if latency else 0.0)
         comm_ratio = comm_delay / self.comm_budget
         return comp_ratio, mem_ratio, comm_ratio, comm_delay
 
@@ -115,6 +117,7 @@ class BaseScheduler:
         dependencies: List[Tuple[Block, Block]],
         activation_sizes: Dict[Tuple[Block, Block], float],
         bandwidth: List[List[float]],
+        latency: List[List[float]] | None,
         device_types: List[str] | None = None,
     ) -> SchedulerResult:
         raise NotImplementedError
@@ -135,6 +138,7 @@ class GreedyScheduler(BaseScheduler):
         dependencies: List[Tuple[Block, Block]],
         activation_sizes: Dict[Tuple[Block, Block], float],
         bandwidth: List[List[float]],
+        latency: List[List[float]] | None,
         device_types: List[str] | None = None,
     ) -> SchedulerResult:
         assignment: Dict[Block, int] = {}
@@ -161,6 +165,7 @@ class GreedyScheduler(BaseScheduler):
                     dependencies,
                     activation_sizes,
                     bandwidth,
+                    latency,
                     comp_used,
                     mem_used,
                     device_types,
@@ -199,6 +204,7 @@ class MinLoadScheduler(BaseScheduler):
         dependencies: List[Tuple[Block, Block]],
         activation_sizes: Dict[Tuple[Block, Block], float],
         bandwidth: List[List[float]],
+        latency: List[List[float]] | None,
         device_types: List[str] | None = None,
     ) -> SchedulerResult:
         assignment: Dict[Block, int] = {}
@@ -224,6 +230,7 @@ class MinLoadScheduler(BaseScheduler):
                     dependencies,
                     activation_sizes,
                     bandwidth,
+                    latency,
                     comp_used,
                     mem_used,
                     device_types,
@@ -266,6 +273,7 @@ class RoundRobinScheduler(BaseScheduler):
         dependencies: List[Tuple[Block, Block]],
         activation_sizes: Dict[Tuple[Block, Block], float],
         bandwidth: List[List[float]],
+        latency: List[List[float]] | None,
         device_types: List[str] | None = None,
     ) -> SchedulerResult:
         assignment: Dict[Block, int] = {}
@@ -293,6 +301,7 @@ class RoundRobinScheduler(BaseScheduler):
                     dependencies,
                     activation_sizes,
                     bandwidth,
+                    latency,
                     comp_used,
                     mem_used,
                     device_types,
@@ -330,6 +339,7 @@ class ResourceAwareGreedyScheduler(BaseScheduler):
         dependencies: List[Tuple[Block, Block]],
         activation_sizes: Dict[Tuple[Block, Block], float],
         bandwidth: List[List[float]],
+        latency: List[List[float]] | None,
         device_types: List[str] | None = None,
     ) -> SchedulerResult:
         assignment: Dict[Block, int] = {}
@@ -355,6 +365,7 @@ class ResourceAwareGreedyScheduler(BaseScheduler):
                     dependencies,
                     activation_sizes,
                     bandwidth,
+                    latency,
                     comp_used,
                     mem_used,
                     device_types,
@@ -398,6 +409,7 @@ class DPScheduler(BaseScheduler):
         dependencies: List[Tuple[Block, Block]],
         activation_sizes: Dict[Tuple[Block, Block], float],
         bandwidth: List[List[float]],
+        latency: List[List[float]] | None,
         device_types: List[str] | None = None,
     ) -> SchedulerResult:
         State = Tuple[
@@ -430,6 +442,7 @@ class DPScheduler(BaseScheduler):
                         dependencies,
                         activation_sizes,
                         bandwidth,
+                        latency,
                         comp_used,
                         mem_used,
                     )
@@ -505,6 +518,7 @@ class GeneticScheduler(BaseScheduler):
         dependencies: List[Tuple[Block, Block]],
         activation_sizes: Dict[Tuple[Block, Block], float],
         bandwidth: List[List[float]],
+        latency: List[List[float]] | None,
         device_types: List[str],
     ) -> float:
         assignment = {blk: dev for blk, dev in zip(blocks, individual)}
@@ -526,6 +540,7 @@ class GeneticScheduler(BaseScheduler):
                 dependencies,
                 activation_sizes,
                 bandwidth,
+                latency,
                 comp_used,
                 mem_used,
                 device_types,
@@ -574,6 +589,7 @@ class GeneticScheduler(BaseScheduler):
         dependencies: List[Tuple[Block, Block]],
         activation_sizes: Dict[Tuple[Block, Block], float],
         bandwidth: List[List[float]],
+        latency: List[List[float]] | None,
         device_types: List[str] | None = None,
     ) -> SchedulerResult:
         device_types = device_types or ["uav" for _ in compute]
@@ -583,7 +599,16 @@ class GeneticScheduler(BaseScheduler):
         for _ in range(self.generations):
             fitness = [
                 self._evaluate_fitness(
-                    indiv, blocks, demands, compute, memory, dependencies, activation_sizes, bandwidth, device_types
+                    indiv,
+                    blocks,
+                    demands,
+                    compute,
+                    memory,
+                    dependencies,
+                    activation_sizes,
+                    bandwidth,
+                    latency,
+                    device_types,
                 )
                 for indiv in population
             ]
@@ -593,7 +618,16 @@ class GeneticScheduler(BaseScheduler):
         best = max(
             population,
             key=lambda indiv: self._evaluate_fitness(
-                indiv, blocks, demands, compute, memory, dependencies, activation_sizes, bandwidth, device_types
+                indiv,
+                blocks,
+                demands,
+                compute,
+                memory,
+                dependencies,
+                activation_sizes,
+                bandwidth,
+                latency,
+                device_types,
             ),
         )
         assignment = {blk: dev for blk, dev in zip(blocks, best)}
@@ -634,6 +668,7 @@ class ACOScheduler(BaseScheduler):
         dependencies: List[Tuple[Block, Block]],
         activation_sizes: Dict[Tuple[Block, Block], float],
         bandwidth: List[List[float]],
+        latency: List[List[float]] | None,
         comp_used: List[float],
         mem_used: List[float],
         device_types: List[str],
@@ -649,6 +684,7 @@ class ACOScheduler(BaseScheduler):
             dependencies,
             activation_sizes,
             bandwidth,
+            latency,
             comp_used,
             mem_used,
             device_types,
@@ -668,6 +704,7 @@ class ACOScheduler(BaseScheduler):
         dependencies: List[Tuple[Block, Block]],
         activation_sizes: Dict[Tuple[Block, Block], float],
         bandwidth: List[List[float]],
+        latency: List[List[float]] | None,
         device_types: List[str] | None = None,
     ) -> SchedulerResult:
         device_types = device_types or ["uav" for _ in compute]
@@ -694,6 +731,7 @@ class ACOScheduler(BaseScheduler):
                             dependencies,
                             activation_sizes,
                             bandwidth,
+                            latency,
                             comp_used,
                             mem_used,
                             device_types,
@@ -724,6 +762,7 @@ class ACOScheduler(BaseScheduler):
                     dependencies,
                     activation_sizes,
                     bandwidth,
+                    latency,
                     device_types,
                 )
                 solutions.append(assignment)

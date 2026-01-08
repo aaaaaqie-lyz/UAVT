@@ -42,16 +42,16 @@ def main() -> None:
             device_types=device_types,
         )
         sim_positions, sim_mob = sim.mobility.update()
-        bandwidth, conn, los_score = sim.channel.compute(sim_positions, sim.device_types)
+        bandwidth, conn, los_score, latency = sim.channel.compute(sim_positions, sim.device_types)
         compute, memory = sim.resource.sample(sim.device_types)
         demands = sim.demand_model.update_interval()
         activation_sizes = {(u, v): sim.demand_model.activation_size(u, v) for u, v in sim.dependencies}
         weights = sim.weights.compute(compute, memory, los_score, sim_mob)
 
-        return sim, bandwidth, demands, activation_sizes, weights, compute, memory
+        return sim, bandwidth, latency, demands, activation_sizes, weights, compute, memory
 
     # Initialize a single env to infer dimensions
-    sim, bandwidth, demands, activation_sizes, weights, compute, memory = _env_factory()
+    sim, bandwidth, latency, demands, activation_sizes, weights, compute, memory = _env_factory()
     scheduler: MARLScheduler = sim._create_scheduler("marl", "round_robin")  # type: ignore[attr-defined]
     if scheduler:
         scheduler.device_types = getattr(sim, "device_types", ["uav" for _ in range(sim.num_uav)])
@@ -60,13 +60,14 @@ def main() -> None:
         from uav_llm_partition.rl.marl.mappo import MAPPOAgent
 
         def _make_env() -> MultiAgentResourceAllocationEnv:
-            sim, bandwidth, demands, activation_sizes, weights, compute, memory = _env_factory()
+            sim, bandwidth, latency, demands, activation_sizes, weights, compute, memory = _env_factory()
             return MultiAgentResourceAllocationEnv(
                 sim.blocks,
                 demands,
                 compute,
                 memory,
                 bandwidth,
+                latency,
                 [0.0 for _ in range(sim.num_uav)],
                 weights,
                 sim.dependencies,

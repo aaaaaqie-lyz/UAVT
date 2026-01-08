@@ -34,6 +34,7 @@ class RLScheduler(BaseScheduler):
         dependencies: List[Tuple[Block, Block]],
         activation_sizes: Dict[Tuple[Block, Block], float],
         bandwidth: List[List[float]],
+        latency: List[List[float]],
         device_types: List[str] | None = None,
     ) -> SchedulerResult:
         if not blocks:
@@ -49,6 +50,7 @@ class RLScheduler(BaseScheduler):
             dependencies=dependencies,
             activation_sizes=activation_sizes,
             bandwidth=bandwidth,
+            latency=latency,
             prev_assignment=prev_assignment,
             load_guard=1.0,
             queue_block_threshold=0.95,
@@ -70,7 +72,25 @@ class RLScheduler(BaseScheduler):
         result = env.episode_result()
         self.agent.update(final_reward=result.reward)
         failed = result.failed or any(
-            max((self._ratios(blk, demands[blk], dev, compute, memory, result.assignment, prev_assignment, dependencies, activation_sizes, bandwidth, [0.0] * len(compute), [0.0] * len(memory))[:3]))
+            max(
+                (
+                    self._ratios(
+                        blk,
+                        demands[blk],
+                        dev,
+                        compute,
+                        memory,
+                        result.assignment,
+                        prev_assignment,
+                        dependencies,
+                        activation_sizes,
+                        bandwidth,
+                        latency,
+                        [0.0] * len(compute),
+                        [0.0] * len(memory),
+                    )[:3]
+                )
+            )
             > 1.0
             for blk, dev in result.assignment.items()
         )
@@ -90,6 +110,7 @@ class RLScheduler(BaseScheduler):
         dependencies: List[Tuple[Block, Block]],
         activation_sizes: Dict[Tuple[Block, Block], float],
         bandwidth: List[List[float]],
+        latency: List[List[float]],
         comp_used: List[float],
         mem_used: List[float],
     ) -> Tuple[float, float, float]:
@@ -106,6 +127,6 @@ class RLScheduler(BaseScheduler):
                 continue
             size = activation_sizes.get((up, down), activation_sizes.get((down, up), 0.0))
             bw = bandwidth[device][neighbor_dev] + 1e-6
-            comm_delay += size / bw
+            comm_delay += size / bw + latency[device][neighbor_dev]
         comm_ratio = comm_delay / self.comm_budget
         return comp_ratio, mem_ratio, comm_ratio

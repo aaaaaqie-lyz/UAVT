@@ -25,7 +25,9 @@ def _env_factory() -> RLResourceAllocationEnv:
 
     # Single-interval snapshot mirroring the first scheduling step
     positions, mobility_risk = sim.mobility.update()
-    bandwidth, conn, los_score = sim.channel.compute(positions, getattr(sim, "device_types", ["uav"] * sim.num_uav))
+    bandwidth, conn, los_score, latency = sim.channel.compute(
+        positions, getattr(sim, "device_types", ["uav"] * sim.num_uav)
+    )
     compute, memory = sim.resource.sample(getattr(sim, "device_types", ["uav"] * sim.num_uav))
     demands = sim.demand_model.update_interval()
     activation_sizes = {(u, v): sim.demand_model.activation_size(u, v) for u, v in sim.dependencies}
@@ -42,6 +44,7 @@ def _env_factory() -> RLResourceAllocationEnv:
         dependencies=sim.dependencies,
         activation_sizes=activation_sizes,
         bandwidth=bandwidth,
+        latency=latency,
         prev_assignment=sim.prev_assignment,
         load_guard=1.0,
         queue_block_threshold=getattr(sim.scheduler, "queue_block_threshold", None),
@@ -69,4 +72,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

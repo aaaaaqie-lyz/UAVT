@@ -48,6 +48,7 @@ class LayerPartitionScheduler:
         dependencies: List[Tuple[Block, Block]],
         activation_sizes: Dict[Tuple[Block, Block], float],
         bandwidth: List[List[float]],
+        latency: List[List[float]],
         device_types: List[str] | None = None,
     ) -> Tuple[Dict[Block, int], List[Tuple[Block, int, int]], bool, str]:
         layer_demands = self._aggregate_by_layer(blocks, demands)
@@ -102,4 +103,3 @@ class LayerPartitionScheduler:
                 assignment[blk] = chosen
 
         return assignment, migrations, failed, reason
-

@@ -76,6 +76,7 @@ class SchedulerHeuristic:
         dependencies: List[Tuple[Block, Block]],
         activation_sizes: Dict[Tuple[Block, Block], float],
         bandwidth: List[List[float]],
+        latency: List[List[float]],
         comp_used: List[float],
         mem_used: List[float],
     ) -> Tuple[float, float, float]:
@@ -93,7 +94,7 @@ class SchedulerHeuristic:
                 continue
             size = activation_sizes.get((up, down), activation_sizes.get((down, up), 0.0))
             bw = bandwidth[device][neighbor_dev] + 1e-6
-            comm_delay += size / bw
+            comm_delay += size / bw + latency[device][neighbor_dev]
         comm_ratio = comm_delay / self.comm_budget
         return comp_ratio, mem_ratio, comm_ratio
 
@@ -107,6 +108,7 @@ class SchedulerHeuristic:
         dependencies: List[Tuple[Block, Block]],
         activation_sizes: Dict[Tuple[Block, Block], float],
         bandwidth: List[List[float]],
+        latency: List[List[float]],
         device_types: List[str] | None,
     ) -> Tuple[Dict[Block, int], List[float], List[float], List[Block]]:
         """Keep only feasible previous placements to mirror MARL pre-seeding."""
@@ -139,6 +141,7 @@ class SchedulerHeuristic:
                 dependencies,
                 activation_sizes,
                 bandwidth,
+                latency,
                 comp_used,
                 mem_used,
             )
@@ -177,6 +180,7 @@ class SchedulerHeuristic:
         dependencies: List[Tuple[Block, Block]],
         activation_sizes: Dict[Tuple[Block, Block], float],
         bandwidth: List[List[float]],
+        latency: List[List[float]],
         device_types: List[str] | None,
         comp_used: List[float],
         mem_used: List[float],
@@ -211,6 +215,7 @@ class SchedulerHeuristic:
                 dependencies,
                 activation_sizes,
                 bandwidth,
+                latency,
                 comp_used,
                 mem_used,
             )
@@ -257,6 +262,7 @@ class SchedulerHeuristic:
         dependencies: List[Tuple[Block, Block]],
         activation_sizes: Dict[Tuple[Block, Block], float],
         bandwidth: List[List[float]],
+        latency: List[List[float]],
         device_types: List[str] | None = None,
     ) -> Tuple[Dict[Block, int], List[Tuple[Block, int, int]], bool, str]:
         assignment: Dict[Block, int] = {}
@@ -274,6 +280,7 @@ class SchedulerHeuristic:
             dependencies,
             activation_sizes,
             bandwidth,
+            latency,
             device_types,
         )
         assignment.update(kept)
@@ -311,6 +318,7 @@ class SchedulerHeuristic:
                     dependencies,
                     activation_sizes,
                     bandwidth,
+                    latency,
                     comp_used,
                     mem_used,
                 )
@@ -490,6 +498,7 @@ class SchedulerHeuristic:
             dependencies,
             activation_sizes,
             bandwidth,
+            latency,
             device_types,
             comp_used,
             mem_used,

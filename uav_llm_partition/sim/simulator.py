@@ -120,7 +120,7 @@ class Simulator:
 
     def run(self) -> MetricsLogger:
         positions, mobility_risk = self.mobility.update()
-        bandwidth, conn, los_score = self.channel.compute(positions, self.device_types)
+        bandwidth, conn, los_score, latency = self.channel.compute(positions, self.device_types)
         compute, memory = self.resource.sample(self.device_types)
         system_state = {
             "is_compute_bound": min(compute) < 0.8 * (sum(compute) / max(len(compute), 1)),
@@ -144,7 +144,7 @@ class Simulator:
 
         for t in range(self.intervals):
             positions, mobility_risk = self.mobility.update()
-            bandwidth, conn, los_score = self.channel.compute(positions, self.device_types)
+            bandwidth, conn, los_score, latency = self.channel.compute(positions, self.device_types)
             compute, memory = self.resource.sample(self.device_types)
             demands = self.demand_model.update_interval()
             activation_sizes = {(u, v): self.demand_model.activation_size(u, v) for u, v in self.dependencies}
@@ -171,6 +171,7 @@ class Simulator:
                 dependencies=self.dependencies,
                 activation_sizes=activation_sizes,
                 bandwidth=bandwidth,
+                latency=latency,
                 device_types=self.device_types,
             )
             if isinstance(result, tuple):
@@ -183,7 +184,9 @@ class Simulator:
                     result.reason,
                 )
             delay_comp, comp_load, comp_delay_by_dev = self._compute_delay(assignment, demands, compute)
-            delay_comm, comm_delay_by_dev = self._communication_delay(assignment, bandwidth, activation_sizes)
+            delay_comm, comm_delay_by_dev = self._communication_delay(
+                assignment, bandwidth, latency, activation_sizes
+            )
             delay_mig, mig_volume, mig_delay_by_dev = self._migration_delay(migrations, bandwidth, demands)
             total_delay = delay_comp + delay_comm + delay_mig
             total_delay_by_dev = [
@@ -312,6 +315,7 @@ class Simulator:
         self,
         assignment: Dict[Block, int],
         bandwidth: List[List[float]],
+        latency: List[List[float]],
         activation_sizes: Dict[Tuple[Block, Block], float],
     ) -> Tuple[float, List[float]]:
         delay = 0.0
@@ -324,7 +328,7 @@ class Simulator:
             if dev_u != dev_d:
                 size = activation_sizes.get((upstream, downstream), activation_sizes.get((downstream, upstream), 0.0))
                 bw = bandwidth[dev_u][dev_d] + 1e-6
-                edge_delay = size / bw
+                edge_delay = size / bw + latency[dev_u][dev_d]
                 delay += edge_delay
                 per_device[dev_u] += edge_delay / 2
                 per_device[dev_d] += edge_delay / 2

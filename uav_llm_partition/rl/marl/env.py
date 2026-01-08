@@ -42,6 +42,7 @@ class MultiAgentResourceAllocationEnv:
         compute: Sequence[float],
         memory: Sequence[float],
         bandwidth: Sequence[Sequence[float]],
+        latency: Sequence[Sequence[float]] | None,
         lyapunov: Sequence[float],
         weights: Sequence[float],
         dependencies: Sequence[Tuple[Block, Block]],
@@ -57,6 +58,7 @@ class MultiAgentResourceAllocationEnv:
         self.compute = list(compute)
         self.memory = list(memory)
         self.bandwidth = bandwidth
+        self.latency = latency or [[0.0 for _ in range(len(self.compute))] for _ in range(len(self.compute))]
         self.lyapunov = list(lyapunov)
         self.weights = list(weights)
         self.dependencies = list(dependencies)
@@ -154,7 +156,7 @@ class MultiAgentResourceAllocationEnv:
                     src = kept.get(up, prev_dev)
                     dst = kept.get(down, prev_dev)
                     if src != dst:
-                        comm_ratio += size / (self.bandwidth[src][dst] + 1e-6)
+                        comm_ratio += size / (self.bandwidth[src][dst] + 1e-6) + self.latency[src][dst]
             score = max(compute_ratio, memory_ratio, comm_ratio)
             if score <= self.load_guard:
                 kept[block] = prev_dev
@@ -210,12 +212,12 @@ class MultiAgentResourceAllocationEnv:
                 dst = self.assignment[down]
                 if dst != dev:
                     size = self.activation_sizes.get((up, down), 0.0)
-                    comm_ratio += size / (self.bandwidth[dev][dst] + 1e-6)
+                    comm_ratio += size / (self.bandwidth[dev][dst] + 1e-6) + self.latency[dev][dst]
             elif down == block and up in self.assignment:
                 src = self.assignment[up]
                 if src != dev:
                     size = self.activation_sizes.get((up, down), 0.0)
-                    comm_ratio += size / (self.bandwidth[src][dev] + 1e-6)
+                    comm_ratio += size / (self.bandwidth[src][dev] + 1e-6) + self.latency[src][dev]
         return comm_ratio
 
     def _migration_cost(self, block: Block, dev: int) -> float:

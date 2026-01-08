@@ -47,6 +47,7 @@ class RLResourceAllocationEnv:
         dependencies: List[Tuple[Block, Block]],
         activation_sizes: Dict[Tuple[Block, Block], float],
         bandwidth: List[List[float]],
+        latency: List[List[float]] | None,
         prev_assignment: Dict[Block, int],
         load_guard: float = 1.0,
         queue_block_threshold: Optional[float] = None,
@@ -60,6 +61,7 @@ class RLResourceAllocationEnv:
         self.dependencies = dependencies
         self.activation_sizes = activation_sizes
         self.bandwidth = bandwidth
+        self.latency = latency or [[0.0 for _ in range(len(compute))] for _ in range(len(compute))]
         self.prev_assignment = prev_assignment
         self.load_guard = load_guard
         self.queue_block_threshold = queue_block_threshold
@@ -106,7 +108,7 @@ class RLResourceAllocationEnv:
                 continue
             size = self.activation_sizes.get((up, down), self.activation_sizes.get((down, up), 0.0))
             bw = self.bandwidth[dev][neighbor_dev] + 1e-6
-            comm_delay += size / bw
+            comm_delay += size / bw + self.latency[dev][neighbor_dev]
         comm_ratio = comm_delay / 0.05  # align with BaseScheduler.comm_budget default
         return comp_ratio, mem_ratio, comm_ratio
 
@@ -236,7 +238,7 @@ class RLResourceAllocationEnv:
             if dev_u is None or dev_d is None or dev_u == dev_d:
                 continue
             size = self.activation_sizes.get((up, down), self.activation_sizes.get((down, up), 0.0))
-            delay += size / (self.bandwidth[dev_u][dev_d] + 1e-6)
+                delay += size / (self.bandwidth[dev_u][dev_d] + 1e-6) + self.latency[dev_u][dev_d]
 
         migration_count = 0
         for blk, new_dev in self.assignment.items():

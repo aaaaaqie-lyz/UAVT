@@ -88,6 +88,7 @@ class MARLScheduler:
         dependencies: Sequence[Tuple[Block, Block]],
         activation_sizes: Dict[Tuple[Block, Block], float],
         bandwidth: Sequence[Sequence[float]],
+        latency: Sequence[Sequence[float]],
         device_types: Sequence[str] | None = None,
     ) -> SchedulerResult:
         resolved_types = list(device_types) if device_types is not None else getattr(self, "device_types", ["uav" for _ in compute])
@@ -98,6 +99,7 @@ class MARLScheduler:
             compute=compute,
             memory=memory,
             bandwidth=bandwidth,
+            latency=latency,
             lyapunov=lyapunov,
             weights=weights,
             dependencies=dependencies,
