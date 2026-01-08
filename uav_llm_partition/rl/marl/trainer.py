@@ -89,6 +89,8 @@ class MARLTrainer:
             policy_losses: List[float] = []
             value_losses: List[float] = []
             entropies: List[float] = []
+            avg_stds: List[float] = []
+            avg_log_probs: List[float] = []
             for env in envs:
                 cumulative += self.collect_experience(env)
                 rollout_counter += 1
@@ -111,13 +113,18 @@ class MARLTrainer:
                     policy_losses.append(stats["policy_loss"])
                     value_losses.append(stats["value_loss"])
                     entropies.append(stats["entropy"])
+                    avg_stds.append(stats.get("avg_std", 0.0))
+                    avg_log_probs.append(stats.get("avg_log_prob", 0.0))
                     self.buffer.clear()
             avg_pl = sum(policy_losses) / max(len(policy_losses), 1)
             avg_vl = sum(value_losses) / max(len(value_losses), 1)
             avg_ent = sum(entropies) / max(len(entropies), 1)
+            avg_std = sum(avg_stds) / max(len(avg_stds), 1)
+            avg_log_prob = sum(avg_log_probs) / max(len(avg_log_probs), 1)
             print(
                 f"Episode {ep + 1}/{episodes}: total_reward={cumulative:.3f} "
-                f"policy_loss={avg_pl:.4f} value_loss={avg_vl:.4f} entropy={avg_ent:.4f}"
+                f"policy_loss={avg_pl:.4f} value_loss={avg_vl:.4f} entropy={avg_ent:.4f} "
+                f"avg_std={avg_std:.4f} avg_log_prob={avg_log_prob:.4f}"
             )
         # Final flush if buffer still has rollouts
         if self.buffer.transitions:

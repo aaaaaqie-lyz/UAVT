@@ -121,6 +121,8 @@ class MAPPOAgent:
         total_value_loss = 0.0
         total_entropy = 0.0
         total_kl = 0.0
+        avg_std = 0.0
+        avg_log_prob = 0.0
 
         indices = list(range(len(states)))
         import random
@@ -133,6 +135,9 @@ class MAPPOAgent:
                 policy_loss = 0.0
                 value_loss = 0.0
                 entropy_acc = 0.0
+                std_acc = 0.0
+                log_prob_acc = 0.0
+                log_prob_count = 0
 
                 per_agent_states = [[] for _ in range(self.cfg.num_agents)]
                 per_agent_bids = [[] for _ in range(self.cfg.num_agents)]
@@ -160,9 +165,12 @@ class MAPPOAgent:
                         surr1 = ratio * adv
                         surr2 = clipped_ratio * adv
                         surrogate = min(surr1, surr2) if adv >= 0 else max(surr1, surr2)
-                        entropy_term = ContinuousPolicyNetwork.entropy_from_std(old_std)
+                        entropy_term = ContinuousPolicyNetwork.entropy_from_std(actor.std)
                         policy_loss += -surrogate - self.cfg.entropy_coef * entropy_term
                         entropy_acc += entropy_term
+                        std_acc += actor.std
+                        log_prob_acc += new_log_prob
+                        log_prob_count += 1
                         total_kl += max(old_log_prob - new_log_prob, 0.0)
 
                         clipped_adv = clipped_ratio * adv
@@ -189,6 +197,10 @@ class MAPPOAgent:
                 total_policy_loss += policy_loss / steps_count
                 total_value_loss += value_loss / steps_count
                 total_entropy += entropy_acc / steps_count
+                if log_prob_count:
+                    total_kl += 0.0
+                avg_std = std_acc / steps_count
+                avg_log_prob = log_prob_acc / max(log_prob_count, 1)
 
         updates = max((len(indices) / batch_size) * self.cfg.ppo_epochs, 1.0)
         # mild entropy annealing to encourage early exploration and late exploitation
@@ -198,6 +210,8 @@ class MAPPOAgent:
             "value_loss": total_value_loss / updates,
             "entropy": total_entropy / updates,
             "kl": total_kl / updates,
+            "avg_std": avg_std if isinstance(avg_std, float) else float(avg_std),
+            "avg_log_prob": avg_log_prob if isinstance(avg_log_prob, float) else float(avg_log_prob),
         }
 
     # -----------------------------
