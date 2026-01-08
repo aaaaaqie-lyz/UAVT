@@ -41,6 +41,7 @@ class SchedulerHeuristic:
         cloud_volume_budget: float | None = 0.5,
         cloud_fallback_only: bool = True,
         cloud_bias: float = 1.0,
+        load_priority_weight: float = 1.0,
     ) -> None:
         self.comm_budget = comm_budget
         self.lyapunov_penalty = lyapunov_penalty
@@ -63,6 +64,7 @@ class SchedulerHeuristic:
         self.cloud_volume_budget = cloud_volume_budget
         self.cloud_fallback_only = cloud_fallback_only
         self.cloud_bias = cloud_bias
+        self.load_priority_weight = load_priority_weight
 
     def _ratios(
         self,
@@ -302,6 +304,14 @@ class SchedulerHeuristic:
             candidate_scores: List[Tuple[int, float, float, bool, bool, float, float, float, float, float]] = []
             cloud_budget_ok: Dict[int, bool] = {}
             non_cloud_feasible = False
+            current_loads = [
+                max(
+                    comp_used[i] / max(compute[i], 1e-6),
+                    mem_used[i] / max(memory[i], 1e-6),
+                )
+                for i in range(len(compute))
+            ]
+            current_max_load = max(current_loads) if current_loads else 0.0
             for dev in range(len(compute)):
                 global_load = max(
                     comp_used[dev] / max(compute[dev], 1e-6),
@@ -338,15 +348,15 @@ class SchedulerHeuristic:
                     (comp_used[dev] + demand.compute) / max(compute[dev], 1e-6),
                     (mem_used[dev] + demand.memory) / max(memory[dev], 1e-6),
                 )
+                projected_max_load = max(
+                    load_term,
+                    max((l for i, l in enumerate(current_loads) if i != dev), default=0.0),
+                )
                 queue_pressure = lyapunov[dev] if dev < len(lyapunov) else 0.0
-                if self.queue_block_threshold is not None and queue_pressure > self.queue_block_threshold:
-                    feasible = False
-                else:
-                    feasible = True
+                feasible = True
                 global_ok = global_load <= self.load_guard or will_migrate
                 feasible = (
                     feasible
-                    and base_score <= 1.0
                     and max(comp_ratio_adj, mem_ratio_adj) <= self.load_guard
                     and global_ok
                     and (not will_migrate or len(migrations) < self.migration_budget)
@@ -360,9 +370,14 @@ class SchedulerHeuristic:
                     min(mem_used) / max(min(memory), 1e-6),
                 )
                 load_bias = self.load_balance_bias * (1.0 + max(imbalance, 0.0))
+                queue_penalty = 0.0
+                if self.queue_block_threshold is not None and queue_pressure > self.queue_block_threshold:
+                    queue_penalty = self.queue_penalty_scale * (queue_pressure - self.queue_block_threshold)
                 final_score = self._score(base_score, queue_pressure, load_term, global_load, load_bias=load_bias)
+                final_score += self.load_priority_weight * projected_max_load
                 final_score += comm_penalty_scale * comm_ratio
                 final_score += migration_penalty_scale * mig_penalty
+                final_score += queue_penalty
                 dev_type = device_types_local[dev] if dev < len(device_types_local) else "uav"
                 final_score += self.type_penalty.get(dev_type, 0.0)
                 if dev_type == "cloud":
