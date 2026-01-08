@@ -99,6 +99,7 @@ class SchedulerHeuristic:
         dependencies: List[Tuple[Block, Block]],
         activation_sizes: Dict[Tuple[Block, Block], float],
         bandwidth: List[List[float]],
+        device_types: List[str] | None,
     ) -> Tuple[Dict[Block, int], List[float], List[float], List[Block]]:
         """Keep only feasible previous placements to mirror MARL pre-seeding."""
 
@@ -106,10 +107,15 @@ class SchedulerHeuristic:
         comp_used = [0.0 for _ in compute]
         mem_used = [0.0 for _ in memory]
         pending: List[Block] = []
+        device_types_local = device_types or []
+        has_non_cloud = any(dtype != "cloud" for dtype in device_types_local)
 
         for blk in blocks:
             prev_dev = prev_assignment.get(blk)
             if prev_dev is None:
+                pending.append(blk)
+                continue
+            if has_non_cloud and prev_dev < len(device_types_local) and device_types_local[prev_dev] == "cloud":
                 pending.append(blk)
                 continue
 
@@ -260,6 +266,7 @@ class SchedulerHeuristic:
             dependencies,
             activation_sizes,
             bandwidth,
+            device_types,
         )
         assignment.update(kept)
         sorted_blocks = list(pending_blocks)
