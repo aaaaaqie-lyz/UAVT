@@ -108,6 +108,7 @@ class MARLScheduler:
             prev_assignment=prev_assignment,
             migration_overhead=self.mig_overhead,
             device_types=resolved_types,
+            rho_q=0.0,
         )
         local_states, global_state = env.reset()
 

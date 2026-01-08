@@ -75,6 +75,7 @@ def main() -> None:
                 prev_assignment={},
                 migration_overhead=scheduler.mig_overhead,
                 device_types=sim.device_types,
+                rho_q=0.0,
             )
 
         env_sample = _make_env()

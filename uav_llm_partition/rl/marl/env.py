@@ -52,6 +52,7 @@ class MultiAgentResourceAllocationEnv:
         migration_overhead: float = 0.01,
         lyapunov_theta: float = 0.3,
         device_types: Sequence[str] | None = None,
+        rho_q: float = 0.0,
         cloud_block_budget: int | None = 1,
         cloud_volume_budget: float | None = 0.5,
         cloud_fallback_only: bool = True,
@@ -72,6 +73,7 @@ class MultiAgentResourceAllocationEnv:
         self.migration_overhead = migration_overhead
         self.lyapunov_theta = lyapunov_theta
         self.device_types = list(device_types) if device_types is not None else ["uav" for _ in compute]
+        self.rho_q = rho_q
         self.cloud_block_budget = cloud_block_budget
         self.cloud_volume_budget = cloud_volume_budget
         self.cloud_fallback_only = cloud_fallback_only
@@ -79,7 +81,7 @@ class MultiAgentResourceAllocationEnv:
 
         # Expected dimensions (base features + block features)
         self.type_ids = [self._encode_type(t) for t in self.device_types]
-        self.local_state_dim = 20
+        self.local_state_dim = 21
 
         # Reward/penalty knobs
         self.migration_penalty_scale = migration_penalty_scale
@@ -94,8 +96,11 @@ class MultiAgentResourceAllocationEnv:
         self.comp_norm = 1.0
         self.mig_norm = 1.0
         self.max_load_weight = 0.4
+        self.comm_reward_weight = 0.3
+        self.cut_penalty_weight = 0.2
         self.queue_weight = 0.3
         self.queue_drift_weight = 0.2
+        self.max_queue_weight = 0.4
         self.failure_penalty = 2.0
         self.team_mix = 0.3
         self.team_mix_base = 0.3
@@ -117,7 +122,7 @@ class MultiAgentResourceAllocationEnv:
         self._max_kv = max((d.kv_cache for d in self.demands.values()), default=1.0)
         self.max_layer = max((blk.layer for blk in self.blocks), default=0) + 1
         self.queue = [0.0 for _ in range(self.num_agents)]
-        self.global_state_dim = 6 * self.num_agents + 6
+        self.global_state_dim = 6 * self.num_agents + 7
         self.reset()
 
     def _encode_type(self, dev_type: str) -> float:
@@ -312,6 +317,14 @@ class MultiAgentResourceAllocationEnv:
             self.mem_used[device] += demand.memory
             comp_delay = demand.compute / (self.compute[device] + 1e-6)
             comm_delay = self._comm_delay(block, device)
+            cut_edges = 0
+            for up, down in self.dependencies:
+                dev_u = self.assignment.get(up, self.prev_assignment.get(up))
+                dev_d = self.assignment.get(down, self.prev_assignment.get(down))
+                if dev_u is None or dev_d is None:
+                    continue
+                if dev_u != dev_d:
+                    cut_edges += 1
             mig_cost = self._migration_cost(block, device)
             prev_load = max(prev_comp / (self.compute[device] + 1e-6), prev_mem / (self.memory[device] + 1e-6))
             load_ratio = max(
@@ -331,6 +344,7 @@ class MultiAgentResourceAllocationEnv:
             device_reward -= self.comm_penalty_scale * comm_term
             device_reward -= self.comp_penalty_scale * comp_term
             device_reward -= self.migration_penalty_scale * mig_term
+            device_reward -= self.comm_reward_weight * comm_term
             device_reward -= self.queue_weight * min(queue_penalty, 1.0)
             device_reward -= self.queue_drift_weight * min(queue_drift / max(self.queue_cap, 1.0), 1.0)
             device_reward -= self.type_penalty.get(self.device_types[device], 0.0)
@@ -363,6 +377,11 @@ class MultiAgentResourceAllocationEnv:
             team_reward = sum(rewards) / max(self.num_agents, 1)
             team_reward -= self.max_load_weight * max_load
             team_reward += fairness_bonus
+            if self.dependencies:
+                team_reward -= self.cut_penalty_weight * (cut_edges / len(self.dependencies))
+            team_reward -= self.comm_reward_weight * self._norm(comm_delay, self.comm_norm)
+            max_queue = max(self.queue) if self.queue else 0.0
+            team_reward -= self.max_queue_weight * min(max_queue / max(self.queue_cap, 1.0), 1.0)
             rewards[device] = device_reward
             team_reward = max(min(team_reward, 1.0), -1.0)
         else:
@@ -398,6 +417,7 @@ class MultiAgentResourceAllocationEnv:
                 comp_ratio,
                 mem_ratio,
                 min(self.queue[dev] / self.queue_cap, 1.0),
+                self.rho_q,
                 self.weights[dev],
                 self.type_ids[dev],
             ]
@@ -443,6 +463,7 @@ class MultiAgentResourceAllocationEnv:
         state.append(max(loads) if loads else 0.0)
         mean_q = sum(self.queue) / max(len(self.queue), 1)
         state.append(min(mean_q / self.queue_cap, 1.0))
+        state.append(self.rho_q)
         expected = self.global_state_dim
         assert len(state) == expected, f"global state dim mismatch {len(state)} != {expected}"
         return state
