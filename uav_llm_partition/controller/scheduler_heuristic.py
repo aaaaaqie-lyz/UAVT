@@ -267,6 +267,7 @@ class SchedulerHeuristic:
         for blk in sorted_blocks:
             demand = demands[blk]
             candidate_scores: List[Tuple[int, float, float, bool, bool, float, float, float, float, float]] = []
+            device_types_local = device_types or []
             for dev in range(len(compute)):
                 global_load = max(
                     comp_used[dev] / max(compute[dev], 1e-6),
@@ -327,7 +328,7 @@ class SchedulerHeuristic:
                 final_score = self._score(base_score, queue_pressure, load_term, global_load, load_bias=load_bias)
                 final_score += comm_penalty_scale * comm_ratio
                 final_score += migration_penalty_scale * mig_penalty
-                dev_type = device_types[dev] if device_types is not None and dev < len(device_types) else "uav"
+                dev_type = device_types_local[dev] if dev < len(device_types_local) else "uav"
                 final_score += self.type_penalty.get(dev_type, 0.0)
                 candidate_scores.append(
                     (
@@ -351,6 +352,21 @@ class SchedulerHeuristic:
                 for c in candidate_scores
                 if c[2] <= 1.0 and c[5] + migration_volume <= self.migration_volume_budget
             ]
+            if device_types_local:
+                non_cloud_types = {"uav", "edge"}
+                feasible_non_cloud = [
+                    c
+                    for c in feasible_candidates
+                    if (device_types_local[c[0]] if c[0] < len(device_types_local) else "uav") in non_cloud_types
+                ]
+                relaxed_non_cloud = [
+                    c
+                    for c in relaxed_candidates
+                    if (device_types_local[c[0]] if c[0] < len(device_types_local) else "uav") in non_cloud_types
+                ]
+                if feasible_non_cloud or relaxed_non_cloud:
+                    feasible_candidates = feasible_non_cloud
+                    relaxed_candidates = relaxed_non_cloud
             min_base = min(c[2] for c in candidate_scores)
             if not feasible_candidates and not relaxed_candidates:
                 failed = min_base > 1.0
