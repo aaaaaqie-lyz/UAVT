@@ -1,0 +1,25 @@
+{
+  "stages": [
+    {
+      "name": "stage_1",
+      "topology": "uav,uav,cloud",
+      "penalty": "low",
+      "episodes": 500,
+      "checkpoint": "checkpoints/stage_1"
+    },
+    {
+      "name": "stage_2",
+      "topology": "uav,uav,edge,cloud",
+      "penalty": "medium",
+      "episodes": 500,
+      "checkpoint": "checkpoints/stage_2"
+    },
+    {
+      "name": "stage_3",
+      "topology": "uav,uav,edge,cloud",
+      "penalty": "realistic",
+      "episodes": 1000,
+      "checkpoint": "checkpoints/stage_3"
+    }
+  ]
+}
