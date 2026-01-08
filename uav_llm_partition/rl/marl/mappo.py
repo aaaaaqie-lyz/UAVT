@@ -142,6 +142,7 @@ class MAPPOAgent:
                 per_agent_states = [[] for _ in range(self.cfg.num_agents)]
                 per_agent_bids = [[] for _ in range(self.cfg.num_agents)]
                 per_agent_advs = [[] for _ in range(self.cfg.num_agents)]
+                per_agent_old_log_probs = [[] for _ in range(self.cfg.num_agents)]
 
                 for t in batch_idx:
                     adv = advantages[t]
@@ -173,24 +174,22 @@ class MAPPOAgent:
                         log_prob_count += 1
                         total_kl += max(old_log_prob - new_log_prob, 0.0)
 
-                        if (adv >= 0 and ratio > 1.0 + self.cfg.clip_epsilon) or (
-                            adv < 0 and ratio < 1.0 - self.cfg.clip_epsilon
-                        ):
-                            effective_adv = 0.0
-                        else:
-                            effective_adv = adv
                         per_agent_states[agent_id].append(state)
                         per_agent_bids[agent_id].append(bid)
-                        per_agent_advs[agent_id].append(effective_adv)
+                        per_agent_advs[agent_id].append(adv)
+                        per_agent_old_log_probs[agent_id].append(old_log_prob)
 
                     v_pred = self.value(global_states[t])
                     value_loss += (v_pred - ret) ** 2
 
                 for agent_id, actor in enumerate(self.actors):
-                    actor.update(
+                    actor.update_ppo(
                         per_agent_states[agent_id],
                         per_agent_bids[agent_id],
-                        [adv for adv in per_agent_advs[agent_id]],
+                        per_agent_old_log_probs[agent_id],
+                        per_agent_advs[agent_id],
+                        clip_eps=self.cfg.clip_epsilon,
+                        entropy_coef=self.cfg.entropy_coef,
                         lr=self.cfg.lr,
                         max_grad_norm=self.cfg.max_grad_norm,
                     )

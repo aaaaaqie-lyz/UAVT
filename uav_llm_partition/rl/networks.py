@@ -246,8 +246,12 @@ class ContinuousPolicyNetwork:
             for i in range(len(dims) - 1)
         ]
         self.biases = [[0.0 for _ in range(dims[i + 1])] for i in range(len(dims) - 1)]
-        # keep a floor on std to avoid entropy collapse
-        self.std = max(std, 0.05)
+        # keep a learnable log-std with a floor to avoid entropy collapse
+        self.log_std = math.log(max(std, 0.05))
+
+    @property
+    def std(self) -> float:
+        return math.exp(self.log_std)
 
     def _eff_std(self) -> float:
         """Return a floor-capped std for log-prob/entropy math."""
@@ -351,18 +355,86 @@ class ContinuousPolicyNetwork:
             for j in range(len(self.biases[-1])):
                 self.biases[-1][j] -= lr * grad_b_last[j]
 
+    def update_ppo(
+        self,
+        states,
+        bids,
+        old_log_probs,
+        advantages,
+        clip_eps: float,
+        entropy_coef: float,
+        lr: float = 1e-3,
+        max_grad_norm: float = 0.5,
+    ) -> None:
+        """PPO-style clipped update for the Gaussian bid policy."""
+
+        for state, bid, old_log_prob, adv in zip(states, bids, old_log_probs, advantages):
+            if abs(adv) < 1e-9:
+                continue
+            mean, activations, zs, _ = self._forward_with_cache(state)
+            bid_clamped = max(min(bid, 1.0 - 1e-6), 1e-6)
+            std = self._eff_std()
+            var = std * std
+            new_log_prob = -0.5 * ((bid_clamped - mean) ** 2) / var - 0.5 * math.log(2 * math.pi * var)
+            ratio = math.exp(new_log_prob - old_log_prob)
+            clipped_ratio = max(1.0 - clip_eps, min(1.0 + clip_eps, ratio))
+            surr1 = ratio * adv
+            surr2 = clipped_ratio * adv
+            surrogate = min(surr1, surr2) if adv >= 0 else max(surr1, surr2)
+            if surrogate != surr1:
+                effective_adv = 0.0
+            else:
+                effective_adv = adv
+
+            grad_logprob_mean = (bid_clamped - mean) / (std * std)
+            grad_mean_logit = mean * (1.0 - mean)
+            grad_logit = -effective_adv * grad_logprob_mean * grad_mean_logit
+            grad_logit = max(min(grad_logit, max_grad_norm), -max_grad_norm)
+
+            # log-std gradient: d log_prob / d log_std = -1 + ((a-m)^2)/var
+            grad_log_std = -effective_adv * (-1.0 + ((bid_clamped - mean) ** 2) / (var + 1e-8))
+            grad_log_std -= entropy_coef  # entropy encourages larger std
+            grad_log_std = max(min(grad_log_std, max_grad_norm), -max_grad_norm)
+            self.log_std -= lr * grad_log_std
+            self.log_std = max(self.log_std, math.log(0.05))
+
+            grad_out = [grad_logit]
+            grad_w_last = [[activations[-1][i] * grad_out[0]] for i in range(len(activations[-1]))]
+            grad_b_last = list(grad_out)
+
+            grad_prev = [self.weights[-1][i][0] * grad_out[0] for i in range(len(self.weights[-1]))]
+            for layer in reversed(range(len(self.weights) - 1)):
+                z = zs[layer]
+                relu_mask = [1.0 if v > 0 else 0.0 for v in z]
+                grad_prev = [g * m for g, m in zip(grad_prev, relu_mask)]
+                grad_w = [[activations[layer][i] * grad_prev[j] for j in range(len(grad_prev))] for i in range(len(activations[layer]))]
+                grad_b = list(grad_prev)
+                for i in range(len(self.weights[layer])):
+                    for j in range(len(self.weights[layer][i])):
+                        self.weights[layer][i][j] -= lr * grad_w[i][j]
+                for j in range(len(self.biases[layer])):
+                    self.biases[layer][j] -= lr * grad_b[j]
+                if layer > 0:
+                    grad_prev = [sum(self.weights[layer][i][k] * grad_prev[k] for k in range(len(grad_prev))) for i in range(len(self.weights[layer]))]
+
+            for i in range(len(self.weights[-1])):
+                for j in range(len(self.weights[-1][i])):
+                    self.weights[-1][i][j] -= lr * grad_w_last[i][j]
+            for j in range(len(self.biases[-1])):
+                self.biases[-1][j] -= lr * grad_b_last[j]
+
     # -----------------------------
     # Persistence helpers
     # -----------------------------
     def to_dict(self) -> dict:
-        return {"weights": self.weights, "biases": self.biases, "std": self.std}
+        return {"weights": self.weights, "biases": self.biases, "log_std": self.log_std}
 
     @classmethod
     def from_dict(cls, payload: dict) -> "ContinuousPolicyNetwork":
         obj: "ContinuousPolicyNetwork" = cls.__new__(cls)  # type: ignore[call-arg]
         obj.weights = payload["weights"]
         obj.biases = payload["biases"]
-        obj.std = payload.get("std", 0.1)
+        obj.log_std = payload.get("log_std", math.log(0.1))
         return obj
 
     def save(self, path: str) -> None:
