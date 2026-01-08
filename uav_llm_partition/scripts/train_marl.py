@@ -17,12 +17,20 @@ def main() -> None:
     parser.add_argument(
         "--resume", action="store_true", help="resume from the provided model path if it exists"
     )
+    parser.add_argument(
+        "--topology",
+        type=str,
+        default="uav,uav,uav,cloud",
+        help="Comma-separated device types (e.g. uav,uav,cloud).",
+    )
     args = parser.parse_args()
+    device_types = [t.strip().lower() for t in args.topology.split(",") if t.strip()]
+    num_uav = len(device_types)
 
     def _env_factory():
         # Build a simulator with MARL scheduler to expose block lists and demands
         sim = Simulator(
-            num_uav=4,
+            num_uav=num_uav,
             num_layers=2,
             num_heads=4,
             hidden_size=1024,
@@ -31,6 +39,7 @@ def main() -> None:
             interval_tokens=6,
             scheduler_type="marl",
             use_lyapunov=False,
+            device_types=device_types,
         )
         sim_positions, sim_mob = sim.mobility.update()
         bandwidth, conn, los_score = sim.channel.compute(sim_positions, sim.device_types)
