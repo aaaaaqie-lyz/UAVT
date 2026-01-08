@@ -88,6 +88,9 @@ class MultiAgentResourceAllocationEnv:
         self.queue_drift_weight = 0.2
         self.failure_penalty = 2.0
         self.team_mix = 0.3
+        self.team_mix_base = 0.3
+        self.max_load_weight_base = 0.4
+        self.imbalance_threshold = 0.7
         self.queue_decay = 0.02
         self.queue_cap = 5.0
         # Penalise non-UAV targets more aggressively so bids must offset the
@@ -321,6 +324,14 @@ class MultiAgentResourceAllocationEnv:
                 for c, cap, m, mem in zip(self.comp_used, self.compute, self.mem_used, self.memory)
             ]
             max_load = max(loads) if loads else 0.0
+            min_load = min(loads) if loads else 0.0
+            imbalance = max_load - min_load
+            if imbalance > self.imbalance_threshold:
+                self.team_mix = 0.5
+                self.max_load_weight = 0.8
+            else:
+                self.team_mix = self.team_mix_base
+                self.max_load_weight = self.max_load_weight_base
             fairness_bonus = 0.1 * (1.0 - max_load) if loads else 0.0
             team_reward = sum(rewards) / max(self.num_agents, 1)
             team_reward -= self.max_load_weight * max_load

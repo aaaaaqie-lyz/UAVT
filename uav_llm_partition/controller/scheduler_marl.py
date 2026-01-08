@@ -122,6 +122,17 @@ class MARLScheduler:
 
         while env.block_idx < len(env.blocks):
             bids, _, _, _ = self.agent.select_bids(local_states, deterministic=True)
+            if resolved_types:
+                scaled = []
+                for bid, dev_type in zip(bids, resolved_types):
+                    if dev_type == "cloud":
+                        scale = 0.5
+                    elif dev_type == "edge":
+                        scale = 0.8
+                    else:
+                        scale = 1.2
+                    scaled.append(bid * scale)
+                bids = scaled
             step = env.step(bids)
             if step.done:
                 break
