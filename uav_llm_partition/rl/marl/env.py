@@ -86,7 +86,7 @@ class MultiAgentResourceAllocationEnv:
         # Reward/penalty knobs
         self.migration_penalty_scale = migration_penalty_scale
         self.comm_penalty_scale = comm_penalty_scale
-        self.comp_penalty_scale = comm_penalty_scale
+        self.comp_penalty_scale = 0.1
         self.bid_weight = 2.0
         self.stability_bonus = stability_bonus
         self.stability_margin = stability_margin
@@ -96,6 +96,7 @@ class MultiAgentResourceAllocationEnv:
         self.comp_norm = 1.0
         self.mig_norm = 1.0
         self.max_load_weight = 0.4
+        self.max_load_hinge = 0.8
         self.comm_reward_weight = 0.3
         self.cut_penalty_weight = 0.2
         self.queue_weight = 0.3
@@ -233,6 +234,21 @@ class MultiAgentResourceAllocationEnv:
                     comm_ratio += size / (self.bandwidth[src][dev] + 1e-6) + self.latency[src][dev]
         return comm_ratio
 
+    def _cut_metrics(self, block: Block, dev: int) -> Tuple[int, float]:
+        cut_cnt = 0
+        cut_bytes = 0.0
+        for up, down in self.dependencies:
+            if block not in (up, down):
+                continue
+            neighbor = down if block == up else up
+            neighbor_dev = self.assignment.get(neighbor, self.prev_assignment.get(neighbor))
+            if neighbor_dev is None or neighbor_dev == dev:
+                continue
+            size = self.activation_sizes.get((up, down), self.activation_sizes.get((down, up), 0.0))
+            cut_cnt += 1
+            cut_bytes += size
+        return cut_cnt, cut_bytes
+
     def _migration_cost(self, block: Block, dev: int) -> float:
         prev = self.prev_assignment.get(block)
         if prev is None or prev == dev:
@@ -310,6 +326,14 @@ class MultiAgentResourceAllocationEnv:
         if not failed:
             self.assignment[block] = device
             demand = self.demands[block]
+            prev_max_load = max(
+                (
+                    max(c / (cap + 1e-6), m / (mem + 1e-6))
+                    for c, cap, m, mem in zip(self.comp_used, self.compute, self.mem_used, self.memory)
+                ),
+                default=0.0,
+            )
+            prev_max_q = max(self.queue) if self.queue else 0.0
             prev_comp = self.comp_used[device]
             prev_mem = self.mem_used[device]
             prev_queue = self.queue[device]
@@ -317,14 +341,7 @@ class MultiAgentResourceAllocationEnv:
             self.mem_used[device] += demand.memory
             comp_delay = demand.compute / (self.compute[device] + 1e-6)
             comm_delay = self._comm_delay(block, device)
-            cut_edges = 0
-            for up, down in self.dependencies:
-                dev_u = self.assignment.get(up, self.prev_assignment.get(up))
-                dev_d = self.assignment.get(down, self.prev_assignment.get(down))
-                if dev_u is None or dev_d is None:
-                    continue
-                if dev_u != dev_d:
-                    cut_edges += 1
+            cut_edges, cut_bytes = self._cut_metrics(block, device)
             mig_cost = self._migration_cost(block, device)
             prev_load = max(prev_comp / (self.compute[device] + 1e-6), prev_mem / (self.memory[device] + 1e-6))
             load_ratio = max(
@@ -335,13 +352,15 @@ class MultiAgentResourceAllocationEnv:
             self._update_queue(device, load_ratio)
             queue_penalty = max(self.queue[device] / max(self.queue_cap, 1.0) - self.queue_threshold, 0.0)
             queue_drift = max(self.queue[device] - prev_queue, 0.0)
-            stick_bonus = self.stability_bonus if block in self.prev_assignment and self.prev_assignment[block] == device else 0.0
+            stick_bonus = 0.0
+            if block in self.prev_assignment and self.prev_assignment[block] == device:
+                if improvement > 0.0 or queue_penalty <= 0.0:
+                    stick_bonus = self.stability_bonus
             base_reward = 1.0 - min(score_map.get(device, 0.0), 1.0)
             comm_term = self._norm(comm_delay, self.comm_norm)
             comp_term = self._norm(comp_delay, self.comp_norm)
             mig_term = self._norm(mig_cost, self.mig_norm)
             device_reward = -self._norm(comp_delay + comm_delay, self.delay_norm)
-            device_reward -= self.comm_penalty_scale * comm_term
             device_reward -= self.comp_penalty_scale * comp_term
             device_reward -= self.migration_penalty_scale * mig_term
             device_reward -= self.comm_reward_weight * comm_term
@@ -375,13 +394,19 @@ class MultiAgentResourceAllocationEnv:
                 self.max_load_weight = self.max_load_weight_base
             fairness_bonus = 0.1 * (1.0 - max_load) if loads else 0.0
             team_reward = sum(rewards) / max(self.num_agents, 1)
-            team_reward -= self.max_load_weight * max_load
+            max_load_hinge = max(max_load - self.max_load_hinge, 0.0)
+            team_reward -= self.max_load_weight * (max_load_hinge * max_load_hinge)
             team_reward += fairness_bonus
             if self.dependencies:
                 team_reward -= self.cut_penalty_weight * (cut_edges / len(self.dependencies))
             team_reward -= self.comm_reward_weight * self._norm(comm_delay, self.comm_norm)
+            team_reward -= self.cut_penalty_weight * self._norm(cut_bytes, self.comm_norm)
             max_queue = max(self.queue) if self.queue else 0.0
             team_reward -= self.max_queue_weight * min(max_queue / max(self.queue_cap, 1.0), 1.0)
+            mig_gain = 0.0
+            if block in self.prev_assignment and self.prev_assignment[block] != device:
+                mig_gain = max(prev_max_load - max_load, 0.0) + max(prev_max_q - max_queue, 0.0)
+            device_reward += mig_gain
             rewards[device] = device_reward
             team_reward = max(min(team_reward, 1.0), -1.0)
         else:
