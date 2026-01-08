@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
+import random
 
 from uav_llm_partition.controller.constants import (
     comm_penalty_scale,
@@ -480,3 +481,266 @@ class DPScheduler(BaseScheduler):
             )),
         )
         return SchedulerResult(best_state[3], best_state[4], False, "")
+
+
+class GeneticScheduler(BaseScheduler):
+    """Genetic algorithm scheduler for approximate placement."""
+
+    def __init__(self, population_size: int = 50, generations: int = 20, mutation_rate: float = 0.1) -> None:
+        super().__init__()
+        self.population_size = population_size
+        self.generations = generations
+        self.mutation_rate = mutation_rate
+
+    def _random_assignment(self, blocks: List[Block], num_devices: int) -> List[int]:
+        return [random.randrange(num_devices) for _ in blocks]
+
+    def _evaluate_fitness(
+        self,
+        individual: List[int],
+        blocks: List[Block],
+        demands: Dict[Block, BlockDemand],
+        compute: List[float],
+        memory: List[float],
+        dependencies: List[Tuple[Block, Block]],
+        activation_sizes: Dict[Tuple[Block, Block], float],
+        bandwidth: List[List[float]],
+        device_types: List[str],
+    ) -> float:
+        assignment = {blk: dev for blk, dev in zip(blocks, individual)}
+        comp_used = [0.0 for _ in compute]
+        mem_used = [0.0 for _ in memory]
+        penalty = 0.0
+        for blk, dev in assignment.items():
+            demand = demands[blk]
+            comp_used[dev] += demand.compute
+            mem_used[dev] += demand.memory
+            comp_ratio, mem_ratio, comm_ratio = self._ratios(
+                blk,
+                demand,
+                dev,
+                compute,
+                memory,
+                assignment,
+                {},
+                dependencies,
+                activation_sizes,
+                bandwidth,
+                comp_used,
+                mem_used,
+                device_types,
+            )
+            penalty += max(comp_ratio, mem_ratio, comm_ratio)
+        max_load = max(
+            max(c / max(cap, 1e-6), m / max(mem, 1e-6))
+            for c, cap, m, mem in zip(comp_used, compute, mem_used, memory)
+        )
+        return -(max_load + penalty / max(len(blocks), 1))
+
+    def _tournament_selection(self, population: List[List[int]], fitness: List[float]) -> List[List[int]]:
+        selected: List[List[int]] = []
+        for _ in range(len(population)):
+            i, j = random.sample(range(len(population)), 2)
+            selected.append(population[i] if fitness[i] > fitness[j] else population[j])
+        return selected
+
+    def _crossover(self, parents: List[List[int]]) -> List[List[int]]:
+        offspring: List[List[int]] = []
+        for i in range(0, len(parents), 2):
+            p1 = parents[i]
+            p2 = parents[(i + 1) % len(parents)]
+            cut = random.randrange(1, len(p1)) if len(p1) > 1 else 0
+            child1 = p1[:cut] + p2[cut:]
+            child2 = p2[:cut] + p1[cut:]
+            offspring.extend([child1, child2])
+        return offspring[: len(parents)]
+
+    def _mutate(self, individuals: List[List[int]], mutation_rate: float, num_devices: int) -> List[List[int]]:
+        for individual in individuals:
+            for idx in range(len(individual)):
+                if random.random() < mutation_rate:
+                    individual[idx] = random.randrange(num_devices)
+        return individuals
+
+    def assign(
+        self,
+        blocks: List[Block],
+        demands: Dict[Block, BlockDemand],
+        compute: List[float],
+        memory: List[float],
+        weights: List[float],
+        lyapunov: List[float],
+        prev_assignment: Dict[Block, int],
+        dependencies: List[Tuple[Block, Block]],
+        activation_sizes: Dict[Tuple[Block, Block], float],
+        bandwidth: List[List[float]],
+        device_types: List[str] | None = None,
+    ) -> SchedulerResult:
+        device_types = device_types or ["uav" for _ in compute]
+        population = [
+            self._random_assignment(blocks, len(compute)) for _ in range(self.population_size)
+        ]
+        for _ in range(self.generations):
+            fitness = [
+                self._evaluate_fitness(
+                    indiv, blocks, demands, compute, memory, dependencies, activation_sizes, bandwidth, device_types
+                )
+                for indiv in population
+            ]
+            selected = self._tournament_selection(population, fitness)
+            offspring = self._crossover(selected)
+            population = self._mutate(offspring, self.mutation_rate, len(compute))
+        best = max(
+            population,
+            key=lambda indiv: self._evaluate_fitness(
+                indiv, blocks, demands, compute, memory, dependencies, activation_sizes, bandwidth, device_types
+            ),
+        )
+        assignment = {blk: dev for blk, dev in zip(blocks, best)}
+        migrations = [
+            (blk, prev_assignment[blk], dev)
+            for blk, dev in assignment.items()
+            if blk in prev_assignment and prev_assignment[blk] != dev
+        ]
+        return SchedulerResult(assignment, migrations, False, "")
+
+
+class ACOScheduler(BaseScheduler):
+    """Ant Colony Optimization scheduler for approximate placement."""
+
+    def __init__(
+        self,
+        num_ants: int = 20,
+        evaporation_rate: float = 0.1,
+        alpha: float = 1.0,
+        beta: float = 2.0,
+        iterations: int = 15,
+    ) -> None:
+        super().__init__()
+        self.num_ants = num_ants
+        self.evaporation_rate = evaporation_rate
+        self.alpha = alpha
+        self.beta = beta
+        self.iterations = iterations
+
+    def _heuristic_score(
+        self,
+        blk: Block,
+        dev: int,
+        demands: Dict[Block, BlockDemand],
+        compute: List[float],
+        memory: List[float],
+        assignment: Dict[Block, int],
+        dependencies: List[Tuple[Block, Block]],
+        activation_sizes: Dict[Tuple[Block, Block], float],
+        bandwidth: List[List[float]],
+        comp_used: List[float],
+        mem_used: List[float],
+        device_types: List[str],
+    ) -> float:
+        comp_ratio, mem_ratio, comm_ratio = self._ratios(
+            blk,
+            demands[blk],
+            dev,
+            compute,
+            memory,
+            assignment,
+            {},
+            dependencies,
+            activation_sizes,
+            bandwidth,
+            comp_used,
+            mem_used,
+            device_types,
+        )
+        score = max(comp_ratio, mem_ratio, comm_ratio)
+        return 1.0 / max(score, 1e-6)
+
+    def assign(
+        self,
+        blocks: List[Block],
+        demands: Dict[Block, BlockDemand],
+        compute: List[float],
+        memory: List[float],
+        weights: List[float],
+        lyapunov: List[float],
+        prev_assignment: Dict[Block, int],
+        dependencies: List[Tuple[Block, Block]],
+        activation_sizes: Dict[Tuple[Block, Block], float],
+        bandwidth: List[List[float]],
+        device_types: List[str] | None = None,
+    ) -> SchedulerResult:
+        device_types = device_types or ["uav" for _ in compute]
+        pheromone = [[1.0 for _ in compute] for _ in blocks]
+        best_assignment: Dict[Block, int] = {}
+        best_fitness = float("-inf")
+        for _ in range(self.iterations):
+            solutions: List[Dict[Block, int]] = []
+            fitness_scores: List[float] = []
+            for _ in range(self.num_ants):
+                assignment: Dict[Block, int] = {}
+                comp_used = [0.0 for _ in compute]
+                mem_used = [0.0 for _ in memory]
+                for idx, blk in enumerate(blocks):
+                    scores = []
+                    for dev in range(len(compute)):
+                        heuristic = self._heuristic_score(
+                            blk,
+                            dev,
+                            demands,
+                            compute,
+                            memory,
+                            assignment,
+                            dependencies,
+                            activation_sizes,
+                            bandwidth,
+                            comp_used,
+                            mem_used,
+                            device_types,
+                        )
+                        score = (pheromone[idx][dev] ** self.alpha) * (heuristic ** self.beta)
+                        scores.append(score)
+                    total = sum(scores)
+                    if total <= 0:
+                        chosen = random.randrange(len(compute))
+                    else:
+                        r = random.random() * total
+                        acc = 0.0
+                        chosen = 0
+                        for dev, score in enumerate(scores):
+                            acc += score
+                            if acc >= r:
+                                chosen = dev
+                                break
+                    assignment[blk] = chosen
+                    comp_used[chosen] += demands[blk].compute
+                    mem_used[chosen] += demands[blk].memory
+                fitness = self._evaluate_fitness(
+                    [assignment[b] for b in blocks],
+                    blocks,
+                    demands,
+                    compute,
+                    memory,
+                    dependencies,
+                    activation_sizes,
+                    bandwidth,
+                    device_types,
+                )
+                solutions.append(assignment)
+                fitness_scores.append(fitness)
+                if fitness > best_fitness:
+                    best_fitness = fitness
+                    best_assignment = assignment
+            for i in range(len(blocks)):
+                for j in range(len(compute)):
+                    pheromone[i][j] *= 1.0 - self.evaporation_rate
+            for assignment, fitness in zip(solutions, fitness_scores):
+                for idx, blk in enumerate(blocks):
+                    dev = assignment[blk]
+                    pheromone[idx][dev] += max(fitness, 0.0)
+        migrations = [
+            (blk, prev_assignment[blk], dev)
+            for blk, dev in best_assignment.items()
+            if blk in prev_assignment and prev_assignment[blk] != dev
+        ]
+        return SchedulerResult(best_assignment, migrations, False, "")

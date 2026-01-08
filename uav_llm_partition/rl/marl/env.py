@@ -69,7 +69,7 @@ class MultiAgentResourceAllocationEnv:
 
         # Expected dimensions (base features + block features)
         self.type_ids = [self._encode_type(t) for t in self.device_types]
-        self.local_state_dim = 18
+        self.local_state_dim = 20
 
         # Reward/penalty knobs
         self.migration_penalty_scale = migration_penalty_scale
@@ -97,6 +97,8 @@ class MultiAgentResourceAllocationEnv:
         self.num_agents = len(self.compute)
         self._max_compute = max(self.compute) if self.compute else 1.0
         self._max_memory = max(self.memory) if self.memory else 1.0
+        self._avg_compute = sum(self.compute) / max(self.num_agents, 1)
+        self._avg_memory = sum(self.memory) / max(self.num_agents, 1)
         self._max_block_compute = max((d.compute for d in self.demands.values()), default=1.0)
         self._max_block_memory = max((d.memory for d in self.demands.values()), default=1.0)
         self._max_kv = max((d.kv_cache for d in self.demands.values()), default=1.0)
@@ -116,6 +118,8 @@ class MultiAgentResourceAllocationEnv:
         self.mem_used = [0.0 for _ in range(self.num_agents)]
         self.block_idx = 0
         self.queue = [max(min(q, self.queue_cap), 0.0) for q in self.lyapunov]
+        self._avg_compute = sum(self.compute) / max(self.num_agents, 1)
+        self._avg_memory = sum(self.memory) / max(self.num_agents, 1)
         return self._get_local_states(), self._get_global_state()
 
     def retain_feasible_prev(self) -> Tuple[Dict[Block, int], List[float], List[float], List[Block]]:
@@ -175,6 +179,8 @@ class MultiAgentResourceAllocationEnv:
         self._max_block_compute = max((d.compute for d in self.demands.values()), default=1.0)
         self._max_block_memory = max((d.memory for d in self.demands.values()), default=1.0)
         self._max_kv = max((d.kv_cache for d in self.demands.values()), default=1.0)
+        self._avg_compute = sum(self.compute) / max(self.num_agents, 1)
+        self._avg_memory = sum(self.memory) / max(self.num_agents, 1)
 
     def current_states(self) -> Tuple[List[List[float]], List[float]]:
         """Expose current local/global states for learners."""
@@ -297,6 +303,7 @@ class MultiAgentResourceAllocationEnv:
             device_reward -= self.migration_penalty_scale * mig_term
             device_reward -= self.queue_weight * min(queue_penalty, 1.0)
             device_reward -= self.queue_drift_weight * min(queue_drift / max(self.queue_cap, 1.0), 1.0)
+            device_reward -= self.type_penalty.get(self.device_types[device], 0.0)
             device_reward += 0.5 * improvement
             device_reward += stick_bonus
             # encourage low-queue, low-load peers
@@ -346,6 +353,8 @@ class MultiAgentResourceAllocationEnv:
             state = [
                 self.compute[dev] / (self._max_compute + 1e-6),
                 self.memory[dev] / (self._max_memory + 1e-6),
+                self.compute[dev] / (self._avg_compute + 1e-6),
+                self.memory[dev] / (self._avg_memory + 1e-6),
                 self.comp_used[dev] / (self._max_compute + 1e-6),
                 self.mem_used[dev] / (self._max_memory + 1e-6),
                 comp_ratio,

@@ -8,7 +8,9 @@ from uav_llm_partition.controller.lyapunov import LyapunovQueue
 from uav_llm_partition.controller.scheduler_heuristic import SchedulerHeuristic
 from uav_llm_partition.controller.scheduler_baselines import (
     BaseScheduler,
+    ACOScheduler,
     DPScheduler,
+    GeneticScheduler,
     GreedyScheduler,
     MinLoadScheduler,
     ResourceAwareGreedyScheduler,
@@ -105,6 +107,10 @@ class Simulator:
             return ResourceAwareGreedyScheduler()
         if scheduler_type == "dp":
             return DPScheduler()
+        if scheduler_type == "genetic":
+            return GeneticScheduler()
+        if scheduler_type == "aco":
+            return ACOScheduler()
         if scheduler_type == "rl":
             return RLScheduler()
         if scheduler_type == "marl":
