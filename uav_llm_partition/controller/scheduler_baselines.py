@@ -28,12 +28,56 @@ class SchedulerResult:
 class BaseScheduler:
     """Base scheduler with shared ratio utilities."""
 
-    def __init__(self, comm_budget: float = 0.05, mig_overhead: float = mig_overhead) -> None:
+    def __init__(
+        self,
+        comm_budget: float = 0.05,
+        mig_overhead: float = mig_overhead,
+        cloud_block_budget: int | None = 1,
+        cloud_volume_budget: float | None = 0.5,
+        cloud_fallback_only: bool = True,
+        cloud_bias: float = 1.0,
+    ) -> None:
         self.comm_budget = comm_budget
         self.mig_overhead = mig_overhead
         self._rr_index = 0
         # Bias placements toward UAVs even when edge/cloud are resource-rich.
         self.type_penalty = type_penalty
+        self.cloud_block_budget = cloud_block_budget
+        self.cloud_volume_budget = cloud_volume_budget
+        self.cloud_fallback_only = cloud_fallback_only
+        self.cloud_bias = cloud_bias
+
+    def _cloud_usage(
+        self,
+        assignment: Dict[Block, int],
+        demands: Dict[Block, BlockDemand],
+        device_types: List[str],
+    ) -> Tuple[int, float]:
+        cloud_blocks = 0
+        cloud_volume = 0.0
+        for blk, dev in assignment.items():
+            if dev < len(device_types) and device_types[dev] == "cloud":
+                cloud_blocks += 1
+                cloud_volume += demands[blk].memory
+        return cloud_blocks, cloud_volume
+
+    def _cloud_budget_ok(
+        self,
+        dev: int,
+        demand: BlockDemand,
+        device_types: List[str],
+        cloud_blocks: int,
+        cloud_volume: float,
+        non_cloud_feasible: bool,
+    ) -> bool:
+        dev_type = device_types[dev] if dev < len(device_types) else "uav"
+        if dev_type != "cloud":
+            return True
+        if self.cloud_fallback_only and non_cloud_feasible:
+            return False
+        block_budget_ok = self.cloud_block_budget is None or cloud_blocks < self.cloud_block_budget
+        volume_budget_ok = self.cloud_volume_budget is None or cloud_volume + demand.memory <= self.cloud_volume_budget
+        return block_budget_ok and volume_budget_ok
 
     def _ratios(
         self,
@@ -69,7 +113,8 @@ class BaseScheduler:
             comm_delay += size / bw + (latency[device][neighbor_dev] if latency else 0.0)
         comm_ratio = comm_delay / self.comm_budget
         type_penalty = self.type_penalty.get(device_types[device], 0.0)
-        return comp_ratio, mem_ratio, comm_ratio + type_penalty
+        cloud_penalty = self.cloud_bias if device_types[device] == "cloud" else 0.0
+        return comp_ratio, mem_ratio, comm_ratio + type_penalty + cloud_penalty
 
     def _ratios_with_comm_delay(
         self,
@@ -103,6 +148,9 @@ class BaseScheduler:
             bw = bandwidth[device][neighbor_dev] + 1e-6
             comm_delay += size / bw + (latency[device][neighbor_dev] if latency else 0.0)
         comm_ratio = comm_delay / self.comm_budget
+        type_penalty = self.type_penalty.get(device_types[device], 0.0)
+        cloud_penalty = self.cloud_bias if device_types[device] == "cloud" else 0.0
+        comm_ratio += type_penalty + cloud_penalty
         return comp_ratio, mem_ratio, comm_ratio, comm_delay
 
     def assign(
@@ -150,9 +198,12 @@ class GreedyScheduler(BaseScheduler):
         device_types = device_types or ["uav" for _ in compute]
 
         sorted_blocks = sorted(blocks, key=lambda b: (demands[b].memory, demands[b].compute), reverse=True)
+        cloud_blocks, cloud_volume = self._cloud_usage(prev_assignment, demands, device_types)
         for blk in sorted_blocks:
             demand = demands[blk]
             best: Tuple[float, int] | None = None
+            non_cloud_feasible = False
+            candidates: List[Tuple[float, int]] = []
             for dev in range(len(compute)):
                 comp_ratio, mem_ratio, comm_ratio = self._ratios(
                     blk,
@@ -173,6 +224,14 @@ class GreedyScheduler(BaseScheduler):
                 base_score = max(comp_ratio, mem_ratio, comm_ratio)
                 if base_score > 1.0:
                     continue
+                if device_types[dev] != "cloud":
+                    non_cloud_feasible = True
+                candidates.append((base_score, dev))
+            for base_score, dev in candidates:
+                if not self._cloud_budget_ok(
+                    dev, demand, device_types, cloud_blocks, cloud_volume, non_cloud_feasible
+                ):
+                    continue
                 if best is None or base_score < best[0]:
                     best = (base_score, dev)
             if best is None:
@@ -182,6 +241,9 @@ class GreedyScheduler(BaseScheduler):
             chosen_dev = best[1]
             if blk in prev_assignment and prev_assignment[blk] != chosen_dev:
                 migrations.append((blk, prev_assignment[blk], chosen_dev))
+            if device_types[chosen_dev] == "cloud":
+                cloud_blocks += 1
+                cloud_volume += demand.memory
             comp_used[chosen_dev] += demand.compute
             mem_used[chosen_dev] += demand.memory
             assignment[blk] = chosen_dev
@@ -213,11 +275,14 @@ class MinLoadScheduler(BaseScheduler):
         migrations: List[Tuple[Block, int, int]] = []
         failed = False
         reason = ""
+        device_types = device_types or ["uav" for _ in compute]
+        cloud_blocks, cloud_volume = self._cloud_usage(prev_assignment, demands, device_types)
 
         for blk in blocks:
             demand = demands[blk]
             best_dev = None
             best_load = None
+            non_cloud_feasible = False
             for dev in range(len(compute)):
                 comp_ratio, mem_ratio, comm_ratio = self._ratios(
                     blk,
@@ -238,10 +303,16 @@ class MinLoadScheduler(BaseScheduler):
                 base_score = max(comp_ratio, mem_ratio, comm_ratio)
                 if base_score > 1.0:
                     continue
+                if device_types[dev] != "cloud":
+                    non_cloud_feasible = True
                 load_after = max(
                     (comp_used[dev] + demand.compute) / max(compute[dev], 1e-6),
                     (mem_used[dev] + demand.memory) / max(memory[dev], 1e-6),
                 )
+                if not self._cloud_budget_ok(
+                    dev, demand, device_types, cloud_blocks, cloud_volume, non_cloud_feasible
+                ):
+                    continue
                 if best_load is None or load_after < best_load:
                     best_load = load_after
                     best_dev = dev
@@ -251,6 +322,9 @@ class MinLoadScheduler(BaseScheduler):
                 break
             if blk in prev_assignment and prev_assignment[blk] != best_dev:
                 migrations.append((blk, prev_assignment[blk], best_dev))
+            if device_types[best_dev] == "cloud":
+                cloud_blocks += 1
+                cloud_volume += demand.memory
             comp_used[best_dev] += demand.compute
             mem_used[best_dev] += demand.memory
             assignment[blk] = best_dev
@@ -283,11 +357,13 @@ class RoundRobinScheduler(BaseScheduler):
         failed = False
         reason = ""
         device_types = device_types or ["uav" for _ in compute]
+        cloud_blocks, cloud_volume = self._cloud_usage(prev_assignment, demands, device_types)
 
         for blk in blocks:
             demand = demands[blk]
             attempts = 0
             chosen = None
+            non_cloud_feasible = False
             while attempts < len(compute):
                 dev = (self._rr_index + attempts) % len(compute)
                 comp_ratio, mem_ratio, comm_ratio = self._ratios(
@@ -307,6 +383,13 @@ class RoundRobinScheduler(BaseScheduler):
                     device_types,
                 )
                 if max(comp_ratio, mem_ratio, comm_ratio) <= 1.0:
+                    if device_types[dev] != "cloud":
+                        non_cloud_feasible = True
+                    if not self._cloud_budget_ok(
+                        dev, demand, device_types, cloud_blocks, cloud_volume, non_cloud_feasible
+                    ):
+                        attempts += 1
+                        continue
                     chosen = dev
                     self._rr_index = dev + 1
                     break
@@ -317,6 +400,9 @@ class RoundRobinScheduler(BaseScheduler):
                 break
             if blk in prev_assignment and prev_assignment[blk] != chosen:
                 migrations.append((blk, prev_assignment[blk], chosen))
+            if device_types[chosen] == "cloud":
+                cloud_blocks += 1
+                cloud_volume += demand.memory
             comp_used[chosen] += demand.compute
             mem_used[chosen] += demand.memory
             assignment[blk] = chosen
@@ -349,10 +435,12 @@ class ResourceAwareGreedyScheduler(BaseScheduler):
         failed = False
         reason = ""
         device_types = device_types or ["uav" for _ in compute]
+        cloud_blocks, cloud_volume = self._cloud_usage(prev_assignment, demands, device_types)
 
         for blk in blocks:
             demand = demands[blk]
             best: Tuple[float, int] | None = None
+            non_cloud_feasible = False
             for dev in range(len(compute)):
                 comp_ratio, mem_ratio, comm_ratio = self._ratios(
                     blk,
@@ -374,6 +462,12 @@ class ResourceAwareGreedyScheduler(BaseScheduler):
                 base_score = max(comp_ratio, mem_ratio, comm_ratio) / weight_factor
                 if base_score > 1.0:
                     continue
+                if device_types[dev] != "cloud":
+                    non_cloud_feasible = True
+                if not self._cloud_budget_ok(
+                    dev, demand, device_types, cloud_blocks, cloud_volume, non_cloud_feasible
+                ):
+                    continue
                 if best is None or base_score < best[0]:
                     best = (base_score, dev)
             if best is None:
@@ -383,6 +477,9 @@ class ResourceAwareGreedyScheduler(BaseScheduler):
             chosen_dev = best[1]
             if blk in prev_assignment and prev_assignment[blk] != chosen_dev:
                 migrations.append((blk, prev_assignment[blk], chosen_dev))
+            if device_types[chosen_dev] == "cloud":
+                cloud_blocks += 1
+                cloud_volume += demand.memory
             comp_used[chosen_dev] += demand.compute
             mem_used[chosen_dev] += demand.memory
             assignment[blk] = chosen_dev
@@ -430,6 +527,26 @@ class DPScheduler(BaseScheduler):
             for idx, comp_used_t, mem_used_t, assignment, migrations, score in beam:
                 comp_used = list(comp_used_t)
                 mem_used = list(mem_used_t)
+                cloud_blocks, cloud_volume = self._cloud_usage(assignment, demands, device_types)
+                non_cloud_feasible = False
+                for dev in range(len(compute)):
+                    comp_ratio, mem_ratio, comm_ratio, _ = self._ratios_with_comm_delay(
+                        blk,
+                        demand,
+                        dev,
+                        compute,
+                        memory,
+                        assignment,
+                        prev_assignment,
+                        dependencies,
+                        activation_sizes,
+                        bandwidth,
+                        latency,
+                        comp_used,
+                        mem_used,
+                    )
+                    if max(comp_ratio, mem_ratio, comm_ratio) <= 1.0 and device_types[dev] != "cloud":
+                        non_cloud_feasible = True
                 for dev in range(len(compute)):
                     comp_ratio, mem_ratio, comm_ratio, comm_delay = self._ratios_with_comm_delay(
                         blk,
@@ -448,6 +565,10 @@ class DPScheduler(BaseScheduler):
                     )
                     base_score = max(comp_ratio, mem_ratio, comm_ratio)
                     if base_score > 1.0:
+                        continue
+                    if not self._cloud_budget_ok(
+                        dev, demand, device_types, cloud_blocks, cloud_volume, non_cloud_feasible
+                    ):
                         continue
                     queue = lyapunov[dev] if dev < len(lyapunov) else 0.0
                     lyap_weight = min(queue * lyap_to_weight_factor, lyap_weight_clip)
@@ -546,6 +667,11 @@ class GeneticScheduler(BaseScheduler):
                 device_types,
             )
             penalty += max(comp_ratio, mem_ratio, comm_ratio)
+        cloud_blocks, cloud_volume = self._cloud_usage(assignment, demands, device_types)
+        if self.cloud_block_budget is not None and cloud_blocks > self.cloud_block_budget:
+            penalty += cloud_blocks
+        if self.cloud_volume_budget is not None and cloud_volume > self.cloud_volume_budget:
+            penalty += cloud_volume
         max_load = max(
             max(c / max(cap, 1e-6), m / max(mem, 1e-6))
             for c, cap, m, mem in zip(comp_used, compute, mem_used, memory)

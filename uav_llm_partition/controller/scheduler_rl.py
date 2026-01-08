@@ -51,6 +51,7 @@ class RLScheduler(BaseScheduler):
             activation_sizes=activation_sizes,
             bandwidth=bandwidth,
             latency=latency,
+            device_types=device_types,
             prev_assignment=prev_assignment,
             load_guard=1.0,
             queue_block_threshold=0.95,

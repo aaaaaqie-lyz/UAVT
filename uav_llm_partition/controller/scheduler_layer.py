@@ -10,11 +10,19 @@ from uav_llm_partition.model_partition.demand_model import BlockDemand
 class LayerPartitionScheduler:
     """Assign whole layers (heads+proj+ffn) to a single device."""
 
-    def __init__(self, strategy: str = "round_robin", comm_budget: float = 0.05) -> None:
+    def __init__(
+        self,
+        strategy: str = "round_robin",
+        comm_budget: float = 0.05,
+        cloud_fallback_only: bool = True,
+        cloud_bias: float = 1.0,
+    ) -> None:
         self.strategy = strategy
         self.comm_budget = comm_budget
         self._rr_index = 0
         self.mig_overhead = 0.01
+        self.cloud_fallback_only = cloud_fallback_only
+        self.cloud_bias = cloud_bias
 
     def _aggregate_by_layer(self, blocks: List[Block], demands: Dict[Block, BlockDemand]) -> Dict[int, BlockDemand]:
         grouped: Dict[int, BlockDemand] = {}
@@ -30,11 +38,20 @@ class LayerPartitionScheduler:
             )
         return grouped
 
-    def _score(self, demand: BlockDemand, dev: int, compute: List[float], memory: List[float], loads: List[float]) -> float:
+    def _score(
+        self,
+        demand: BlockDemand,
+        dev: int,
+        compute: List[float],
+        memory: List[float],
+        loads: List[float],
+        dev_type: str,
+    ) -> float:
         comp_ratio = demand.compute / (compute[dev] + 1e-6)
         mem_ratio = demand.memory / (memory[dev] + 1e-6)
         base = max(comp_ratio, mem_ratio)
-        return base + loads[dev]
+        bias = self.cloud_bias if dev_type == "cloud" else 0.0
+        return base + loads[dev] + bias
 
     def assign(
         self,
@@ -59,13 +76,31 @@ class LayerPartitionScheduler:
         failed = False
         reason = ""
 
+        device_types = device_types or ["uav" for _ in compute]
         for layer in sorted(layer_demands.keys()):
             demand = layer_demands[layer]
             chosen = None
             if self.strategy == "round_robin":
                 for attempt in range(len(compute)):
                     dev = (self._rr_index + attempt) % len(compute)
-                    score = self._score(demand, dev, compute, memory, [0.0 for _ in compute])
+                    dev_type = device_types[dev] if dev < len(device_types) else "uav"
+                    score = self._score(demand, dev, compute, memory, [0.0 for _ in compute], dev_type)
+                    if self.cloud_fallback_only and dev_type == "cloud":
+                        attempts_left = any(
+                            self._score(
+                                demand,
+                                cand,
+                                compute,
+                                memory,
+                                [0.0 for _ in compute],
+                                device_types[cand] if cand < len(device_types) else "uav",
+                            )
+                            <= 1.0
+                            for cand in range(len(compute))
+                            if (device_types[cand] if cand < len(device_types) else "uav") != "cloud"
+                        )
+                        if attempts_left:
+                            continue
                     if score <= 1.0:
                         chosen = dev
                         self._rr_index = dev + 1
@@ -73,11 +108,14 @@ class LayerPartitionScheduler:
             elif self.strategy == "min_load":
                 best_score = None
                 for dev in range(len(compute)):
+                    dev_type = device_types[dev] if dev < len(device_types) else "uav"
                     load_term = max(
                         (comp_used[dev] + demand.compute) / (compute[dev] + 1e-6),
                         (mem_used[dev] + demand.memory) / (memory[dev] + 1e-6),
                     )
                     if load_term > 1.0:
+                        continue
+                    if self.cloud_fallback_only and dev_type == "cloud":
                         continue
                     if best_score is None or load_term < best_score:
                         best_score = load_term
@@ -85,8 +123,13 @@ class LayerPartitionScheduler:
             else:  # resource_aware
                 best_score = None
                 for dev in range(len(compute)):
-                    score = self._score(demand, dev, compute, memory, [0.0 for _ in compute]) / (1.0 + max(weights[dev], 0.0))
+                    dev_type = device_types[dev] if dev < len(device_types) else "uav"
+                    score = self._score(
+                        demand, dev, compute, memory, [0.0 for _ in compute], dev_type
+                    ) / (1.0 + max(weights[dev], 0.0))
                     if score > 1.0:
+                        continue
+                    if self.cloud_fallback_only and dev_type == "cloud":
                         continue
                     if best_score is None or score < best_score:
                         best_score = score

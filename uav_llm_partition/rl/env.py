@@ -48,9 +48,14 @@ class RLResourceAllocationEnv:
         activation_sizes: Dict[Tuple[Block, Block], float],
         bandwidth: List[List[float]],
         latency: List[List[float]] | None,
+        device_types: List[str] | None,
         prev_assignment: Dict[Block, int],
         load_guard: float = 1.0,
         queue_block_threshold: Optional[float] = None,
+        cloud_block_budget: int | None = 1,
+        cloud_volume_budget: float | None = 0.5,
+        cloud_fallback_only: bool = True,
+        cloud_bias: float = 1.0,
     ) -> None:
         self.blocks = list(blocks)
         self.demands = demands
@@ -62,9 +67,14 @@ class RLResourceAllocationEnv:
         self.activation_sizes = activation_sizes
         self.bandwidth = bandwidth
         self.latency = latency or [[0.0 for _ in range(len(compute))] for _ in range(len(compute))]
+        self.device_types = device_types or ["uav" for _ in compute]
         self.prev_assignment = prev_assignment
         self.load_guard = load_guard
         self.queue_block_threshold = queue_block_threshold
+        self.cloud_block_budget = cloud_block_budget
+        self.cloud_volume_budget = cloud_volume_budget
+        self.cloud_fallback_only = cloud_fallback_only
+        self.cloud_bias = cloud_bias
 
         self.comp_used = [0.0 for _ in compute]
         self.mem_used = [0.0 for _ in memory]
@@ -85,14 +95,42 @@ class RLResourceAllocationEnv:
     # ------------------------------------------------------------------
     def _action_mask(self, block: Block) -> List[bool]:
         demand = self.demands[block]
+        cloud_blocks = sum(
+            1 for _, dev in self.assignment.items() if self.device_types[dev] == "cloud"
+        )
+        cloud_volume = sum(
+            self.demands[blk].memory
+            for blk, dev in self.assignment.items()
+            if self.device_types[dev] == "cloud"
+        )
         mask: List[bool] = []
+        non_cloud_feasible = False
+        prelim: List[Tuple[float, bool]] = []
         for dev in range(len(self.compute)):
             comp_ratio, mem_ratio, comm_ratio = self._ratios(block, demand, dev)
             base_score = max(comp_ratio, mem_ratio, comm_ratio)
+            feasible = base_score <= self.load_guard
+            prelim.append((base_score, feasible))
+            if feasible and self.device_types[dev] != "cloud":
+                non_cloud_feasible = True
+        for dev, (base_score, feasible) in enumerate(prelim):
             if self.queue_block_threshold is not None and self.lyapunov[dev] > self.queue_block_threshold:
                 mask.append(False)
                 continue
-            mask.append(base_score <= self.load_guard)
+            if not feasible:
+                mask.append(False)
+                continue
+            if self.device_types[dev] == "cloud":
+                if self.cloud_fallback_only and non_cloud_feasible:
+                    mask.append(False)
+                    continue
+                if self.cloud_block_budget is not None and cloud_blocks >= self.cloud_block_budget:
+                    mask.append(False)
+                    continue
+                if self.cloud_volume_budget is not None and cloud_volume + demand.memory > self.cloud_volume_budget:
+                    mask.append(False)
+                    continue
+            mask.append(True)
         return mask
 
     def _ratios(self, block: Block, demand: BlockDemand, dev: int) -> Tuple[float, float, float]:
@@ -110,6 +148,8 @@ class RLResourceAllocationEnv:
             bw = self.bandwidth[dev][neighbor_dev] + 1e-6
             comm_delay += size / bw + self.latency[dev][neighbor_dev]
         comm_ratio = comm_delay / 0.05  # align with BaseScheduler.comm_budget default
+        if self.device_types[dev] == "cloud":
+            comm_ratio += self.cloud_bias
         return comp_ratio, mem_ratio, comm_ratio
 
     def _global_stats(self) -> Tuple[float, float, float]:

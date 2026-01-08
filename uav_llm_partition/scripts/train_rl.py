@@ -45,6 +45,7 @@ def _env_factory() -> RLResourceAllocationEnv:
         activation_sizes=activation_sizes,
         bandwidth=bandwidth,
         latency=latency,
+        device_types=getattr(sim, "device_types", ["uav"] * sim.num_uav),
         prev_assignment=sim.prev_assignment,
         load_guard=1.0,
         queue_block_threshold=getattr(sim.scheduler, "queue_block_threshold", None),

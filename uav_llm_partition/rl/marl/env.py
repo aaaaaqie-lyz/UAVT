@@ -52,6 +52,10 @@ class MultiAgentResourceAllocationEnv:
         migration_overhead: float = 0.01,
         lyapunov_theta: float = 0.3,
         device_types: Sequence[str] | None = None,
+        cloud_block_budget: int | None = 1,
+        cloud_volume_budget: float | None = 0.5,
+        cloud_fallback_only: bool = True,
+        cloud_bias: float = 1.0,
     ) -> None:
         self.blocks = list(blocks)
         self.demands = demands
@@ -68,6 +72,10 @@ class MultiAgentResourceAllocationEnv:
         self.migration_overhead = migration_overhead
         self.lyapunov_theta = lyapunov_theta
         self.device_types = list(device_types) if device_types is not None else ["uav" for _ in compute]
+        self.cloud_block_budget = cloud_block_budget
+        self.cloud_volume_budget = cloud_volume_budget
+        self.cloud_fallback_only = cloud_fallback_only
+        self.cloud_bias = cloud_bias
 
         # Expected dimensions (base features + block features)
         self.type_ids = [self._encode_type(t) for t in self.device_types]
@@ -243,10 +251,19 @@ class MultiAgentResourceAllocationEnv:
         scores: Dict[int, float] = {}
         prev_dev = self.prev_assignment.get(block)
         prev_score = None
+        cloud_blocks = sum(1 for _, dev in self.assignment.items() if self.device_types[dev] == "cloud")
+        cloud_volume = sum(
+            self.demands[blk].memory
+            for blk, dev in self.assignment.items()
+            if self.device_types[dev] == "cloud"
+        )
+        non_cloud_feasible = False
         for dev in range(self.num_agents):
             feasible, base_score = self._feasible(block, dev)
             if not feasible:
                 continue
+            if self.device_types[dev] != "cloud":
+                non_cloud_feasible = True
             mig_cost = self._migration_cost(block, dev)
             comm_delay = self._comm_delay(block, dev)
             # Lyapunov and migration act as penalties; bids reward willingness
@@ -255,6 +272,14 @@ class MultiAgentResourceAllocationEnv:
             score += self.migration_penalty_scale * mig_cost
             score += self.comm_penalty_scale * comm_delay
             score += self.type_penalty.get(self.device_types[dev], 0.0)
+            if self.device_types[dev] == "cloud":
+                score += self.cloud_bias
+                if self.cloud_fallback_only and non_cloud_feasible:
+                    continue
+                if self.cloud_block_budget is not None and cloud_blocks >= self.cloud_block_budget:
+                    continue
+                if self.cloud_volume_budget is not None and cloud_volume + self.demands[block].memory > self.cloud_volume_budget:
+                    continue
             score -= self.bid_weight * bids[dev]
             scores[dev] = score
             if prev_dev is not None and dev == prev_dev:
