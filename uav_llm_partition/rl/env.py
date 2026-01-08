@@ -278,7 +278,7 @@ class RLResourceAllocationEnv:
             if dev_u is None or dev_d is None or dev_u == dev_d:
                 continue
             size = self.activation_sizes.get((up, down), self.activation_sizes.get((down, up), 0.0))
-                delay += size / (self.bandwidth[dev_u][dev_d] + 1e-6) + self.latency[dev_u][dev_d]
+            delay += size / (self.bandwidth[dev_u][dev_d] + 1e-6) + self.latency[dev_u][dev_d]
 
         migration_count = 0
         for blk, new_dev in self.assignment.items():

@@ -131,6 +131,7 @@ class BaseScheduler:
         latency: List[List[float]] | None,
         comp_used: List[float],
         mem_used: List[float],
+        device_types: List[str],
     ) -> Tuple[float, float, float, float]:
         comp_ratio = (comp_used[device] + demand.compute) / max(compute[device], 1e-6)
         mem_ratio = (mem_used[device] + demand.memory) / max(memory[device], 1e-6)
@@ -544,6 +545,7 @@ class DPScheduler(BaseScheduler):
                         latency,
                         comp_used,
                         mem_used,
+                        device_types,
                     )
                     if max(comp_ratio, mem_ratio, comm_ratio) <= 1.0 and device_types[dev] != "cloud":
                         non_cloud_feasible = True
@@ -562,6 +564,7 @@ class DPScheduler(BaseScheduler):
                         latency,
                         comp_used,
                         mem_used,
+                        device_types,
                     )
                     base_score = max(comp_ratio, mem_ratio, comm_ratio)
                     if base_score > 1.0:
