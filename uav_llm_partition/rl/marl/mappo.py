@@ -173,10 +173,15 @@ class MAPPOAgent:
                         log_prob_count += 1
                         total_kl += max(old_log_prob - new_log_prob, 0.0)
 
-                        clipped_adv = clipped_ratio * adv
+                        if (adv >= 0 and ratio > 1.0 + self.cfg.clip_epsilon) or (
+                            adv < 0 and ratio < 1.0 - self.cfg.clip_epsilon
+                        ):
+                            effective_adv = 0.0
+                        else:
+                            effective_adv = adv
                         per_agent_states[agent_id].append(state)
                         per_agent_bids[agent_id].append(bid)
-                        per_agent_advs[agent_id].append(clipped_adv)
+                        per_agent_advs[agent_id].append(effective_adv)
 
                     v_pred = self.value(global_states[t])
                     value_loss += (v_pred - ret) ** 2
