@@ -37,6 +37,8 @@ class SchedulerHeuristic:
         queue_penalty_scale: float = 0.4,
         preventive_queue_threshold: float = 0.6,
         queue_block_threshold: float | None = None,
+        cloud_block_budget: int | None = 1,
+        cloud_volume_budget: float | None = 0.5,
     ) -> None:
         self.comm_budget = comm_budget
         self.lyapunov_penalty = lyapunov_penalty
@@ -55,6 +57,8 @@ class SchedulerHeuristic:
         self.preventive_queue_threshold = preventive_queue_threshold
         self.queue_block_threshold = queue_block_threshold
         self.type_penalty = type_penalty
+        self.cloud_block_budget = cloud_block_budget
+        self.cloud_volume_budget = cloud_volume_budget
 
     def _ratios(
         self,
@@ -269,12 +273,23 @@ class SchedulerHeuristic:
             device_types,
         )
         assignment.update(kept)
+        device_types_local = device_types or []
+        cloud_blocks = sum(
+            1
+            for _, dev in kept.items()
+            if dev < len(device_types_local) and device_types_local[dev] == "cloud"
+        )
+        cloud_volume = sum(
+            demands[blk].memory
+            for blk, dev in kept.items()
+            if dev < len(device_types_local) and device_types_local[dev] == "cloud"
+        )
         sorted_blocks = list(pending_blocks)
 
         for blk in sorted_blocks:
             demand = demands[blk]
             candidate_scores: List[Tuple[int, float, float, bool, bool, float, float, float, float, float]] = []
-            device_types_local = device_types or []
+            cloud_budget_ok: Dict[int, bool] = {}
             for dev in range(len(compute)):
                 global_load = max(
                     comp_used[dev] / max(compute[dev], 1e-6),
@@ -337,6 +352,18 @@ class SchedulerHeuristic:
                 final_score += migration_penalty_scale * mig_penalty
                 dev_type = device_types_local[dev] if dev < len(device_types_local) else "uav"
                 final_score += self.type_penalty.get(dev_type, 0.0)
+                if dev_type == "cloud":
+                    block_budget_ok = (
+                        self.cloud_block_budget is None
+                        or cloud_blocks < self.cloud_block_budget
+                    )
+                    volume_budget_ok = (
+                        self.cloud_volume_budget is None
+                        or cloud_volume + demand.memory <= self.cloud_volume_budget
+                    )
+                    cloud_budget_ok[dev] = block_budget_ok and volume_budget_ok
+                else:
+                    cloud_budget_ok[dev] = True
                 candidate_scores.append(
                     (
                         dev,
@@ -353,11 +380,13 @@ class SchedulerHeuristic:
                     )
                 )
 
-            feasible_candidates = [c for c in candidate_scores if c[3]]
+            feasible_candidates = [c for c in candidate_scores if c[3] and cloud_budget_ok[c[0]]]
             relaxed_candidates = [
                 c
                 for c in candidate_scores
-                if c[2] <= 1.0 and c[5] + migration_volume <= self.migration_volume_budget
+                if c[2] <= 1.0
+                and c[5] + migration_volume <= self.migration_volume_budget
+                and cloud_budget_ok[c[0]]
             ]
             if device_types_local:
                 non_cloud_types = {"uav", "edge"}
@@ -425,6 +454,10 @@ class SchedulerHeuristic:
             if blk in prev_assignment and prev_assignment[blk] != dev and will_migrate:
                 migrations.append((blk, prev_assignment[blk], dev))
                 migration_volume += mig_volume
+            chosen_dev_type = device_types_local[dev] if dev < len(device_types_local) else "uav"
+            if chosen_dev_type == "cloud":
+                cloud_blocks += 1
+                cloud_volume += demand.memory
             comp_used[dev] += demand.compute
             mem_used[dev] += demand.memory
             assignment[blk] = dev
