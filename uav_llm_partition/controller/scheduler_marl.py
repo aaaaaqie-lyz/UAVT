@@ -17,6 +17,7 @@ class MARLScheduler:
         self.agent: MAPPOAgent | None = None
         self.model_path = model_path
         self.mig_overhead = mig_overhead
+        self.rho_q = 0.0
 
     def _ensure_agent(self, num_agents: int, local_state_dim: int, global_state_dim: int) -> None:
         """Load or create a MAPPO agent with dimension validation and fallbacks."""
@@ -108,7 +109,7 @@ class MARLScheduler:
             prev_assignment=prev_assignment,
             migration_overhead=self.mig_overhead,
             device_types=resolved_types,
-            rho_q=0.0,
+            rho_q=self.rho_q,
         )
         local_states, global_state = env.reset()
 

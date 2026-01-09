@@ -99,6 +99,8 @@ class MultiAgentResourceAllocationEnv:
         self.max_load_hinge = 0.8
         self.comm_reward_weight = 0.3
         self.cut_penalty_weight = 0.2
+        self.cut_edge_limit = 2
+        self.cut_bytes_limit = 0.05
         self.queue_weight = 0.3
         self.queue_drift_weight = 0.2
         self.max_queue_weight = 0.4
@@ -401,6 +403,12 @@ class MultiAgentResourceAllocationEnv:
                 team_reward -= self.cut_penalty_weight * (cut_edges / len(self.dependencies))
             team_reward -= self.comm_reward_weight * self._norm(comm_delay, self.comm_norm)
             team_reward -= self.cut_penalty_weight * self._norm(cut_bytes, self.comm_norm)
+            if cut_edges > self.cut_edge_limit:
+                team_reward -= self.cut_penalty_weight * (cut_edges - self.cut_edge_limit)
+            if cut_bytes > self.cut_bytes_limit:
+                team_reward -= self.cut_penalty_weight * self._norm(
+                    cut_bytes - self.cut_bytes_limit, self.comm_norm
+                )
             max_queue = max(self.queue) if self.queue else 0.0
             team_reward -= self.max_queue_weight * min(max_queue / max(self.queue_cap, 1.0), 1.0)
             mig_gain = 0.0

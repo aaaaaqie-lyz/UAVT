@@ -141,6 +141,8 @@ class Simulator:
             elif self.lyapunov_mode == "enhanced":
                 self.scheduler.lyapunov_penalty = max(self.lyapunov_penalty_value, self.scheduler.lyapunov_penalty)
                 self.scheduler.queue_block_threshold = 0.9
+        if isinstance(self.scheduler, MARLScheduler):
+            self.scheduler.rho_q = rl_params.rho_q
 
         for t in range(self.intervals):
             positions, mobility_risk = self.mobility.update()
