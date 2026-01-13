@@ -295,8 +295,8 @@ class Simulator:
                 log_lines.append(f"layers={layer_block}")
             log_lines.append(
                 "rho_w={:.2f} rho_q={:.2f}".format(
-                    getattr(self.scheduler, "weight_scale", 0.0),
-                    getattr(self.scheduler, "lyapunov_penalty", 0.0),
+                    getattr(self.scheduler, "rho_w", getattr(self.scheduler, "weight_scale", 0.0)),
+                    getattr(self.scheduler, "rho_q", getattr(self.scheduler, "lyapunov_penalty", 0.0)),
                 )
             )
             logger.info("\n ".join(log_lines))
