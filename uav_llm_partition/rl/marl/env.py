@@ -86,7 +86,14 @@ class MultiAgentResourceAllocationEnv:
 
         # Expected dimensions (base features + block features)
         self.type_ids = [self._encode_type(t) for t in self.device_types]
-        self.local_state_dim = 21
+        self._max_bw = max((max(row) for row in self.bandwidth), default=1.0)
+        self._avg_bw_per_dev = [
+            sum(row) / max(len([v for v in row if v > 0.0]), 1) if row else 0.0 for row in self.bandwidth
+        ]
+        self._reach_ratio = [
+            sum(1 for v in row if v > 0.0) / max(self.num_agents - 1, 1) for row in self.bandwidth
+        ]
+        self.local_state_dim = 23
 
         # Reward/penalty knobs
         self.migration_penalty_scale = migration_penalty_scale
@@ -133,7 +140,7 @@ class MultiAgentResourceAllocationEnv:
         self.queue = [0.0 for _ in range(self.num_agents)]
         self.failed_blocks: List[Block] = []
         self.retry_counts: Dict[Block, int] = {}
-        self.global_state_dim = 6 * self.num_agents + 10
+        self.global_state_dim = 6 * self.num_agents + 12
         self.reset()
 
     def _encode_type(self, dev_type: str) -> float:
@@ -207,6 +214,13 @@ class MultiAgentResourceAllocationEnv:
         self.blocks = list(pending_blocks)
         self.block_idx = 0
         self.queue = [max(min(q, self.queue_cap), 0.0) for q in self.lyapunov]
+        self._max_bw = max((max(row) for row in self.bandwidth), default=1.0)
+        self._avg_bw_per_dev = [
+            sum(row) / max(len([v for v in row if v > 0.0]), 1) if row else 0.0 for row in self.bandwidth
+        ]
+        self._reach_ratio = [
+            sum(1 for v in row if v > 0.0) / max(self.num_agents - 1, 1) for row in self.bandwidth
+        ]
         self._max_block_compute = max((d.compute for d in self.demands.values()), default=1.0)
         self._max_block_memory = max((d.memory for d in self.demands.values()), default=1.0)
         self._max_kv = max((d.kv_cache for d in self.demands.values()), default=1.0)
@@ -287,9 +301,9 @@ class MultiAgentResourceAllocationEnv:
         rate = self.bandwidth[prev][dev] + 1e-6
         return kv / rate + self.migration_overhead
 
-    def _update_queue(self, dev: int, load_ratio: float) -> None:
-        drift = load_ratio - self.lyapunov_theta
-        new_q = self.queue[dev] + drift - self.queue_decay
+    def _update_queue(self, dev: int, arrival: float, service: float) -> None:
+        new_q = max(self.queue[dev] - service, 0.0) + arrival
+        new_q = new_q - self.queue_decay
         self.queue[dev] = max(min(new_q, self.queue_cap), 0.0)
         self.lyapunov[dev] = self.queue[dev]
 
@@ -393,7 +407,7 @@ class MultiAgentResourceAllocationEnv:
                 self.mem_used[device] / (self.memory[device] + 1e-6),
             )
             improvement = max(prev_load - load_ratio, 0.0)
-            self._update_queue(device, load_ratio)
+            self._update_queue(device, demand.compute, self.compute[device])
             queue_penalty = max(self.queue[device] / max(self.queue_cap, 1.0) - self.queue_threshold, 0.0)
             queue_drift = max(self.queue[device] - prev_queue, 0.0)
             stick_bonus = 0.0
@@ -501,6 +515,8 @@ class MultiAgentResourceAllocationEnv:
                 comp_ratio,
                 mem_ratio,
                 min(self.queue[dev] / self.queue_cap, 1.0),
+                min(self._avg_bw_per_dev[dev] / (self._max_bw + 1e-6), 1.0),
+                min(self._reach_ratio[dev], 1.0),
                 self.rho_q,
                 self.weights[dev],
                 self.type_ids[dev],
@@ -546,6 +562,10 @@ class MultiAgentResourceAllocationEnv:
         state.append(sum(loads) / len(loads) if loads else 0.0)
         state.append(max(loads) if loads else 0.0)
         state.append(min(loads) if loads else 0.0)
+        mean_bw = sum(self._avg_bw_per_dev) / max(len(self._avg_bw_per_dev), 1)
+        mean_reach = sum(self._reach_ratio) / max(len(self._reach_ratio), 1)
+        state.append(min(mean_bw / (self._max_bw + 1e-6), 1.0))
+        state.append(min(mean_reach, 1.0))
         mean_q = sum(self.queue) / max(len(self.queue), 1)
         state.append(min(mean_q / self.queue_cap, 1.0))
         max_q = max(self.queue) if self.queue else 0.0

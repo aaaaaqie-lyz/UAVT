@@ -43,6 +43,7 @@ class Simulator:
         intervals: int = 50,
         interval_tokens: int = 16,
         initial_seq_len: int = 128,
+        kv_window_tokens: int | None = None,
         use_lyapunov: bool = True,
         lyapunov_mode: str = "adaptive",
         lyapunov_penalty_value: float = 0.5,
@@ -72,6 +73,7 @@ class Simulator:
             head_dim=head_dim,
             interval_tokens=interval_tokens,
             initial_seq_len=initial_seq_len,
+            kv_window_tokens=kv_window_tokens,
         )
         self.use_lyapunov = use_lyapunov
         self.lyapunov_mode = lyapunov_mode
@@ -199,7 +201,10 @@ class Simulator:
             max_load = max(loads)
             fairness = jain_fairness(loads)
             if self.use_lyapunov and self.lyapunov_mode != "none":
-                lyapunov = self.lyapunov.update(loads)
+                arrivals = [0.0 for _ in range(self.num_uav)]
+                for blk, dev in assignment.items():
+                    arrivals[dev] += demands[blk].compute
+                lyapunov = self.lyapunov.update_from_arrival_service(arrivals, compute)
             else:
                 lyapunov = [0.0 for _ in range(self.num_uav)]
 
