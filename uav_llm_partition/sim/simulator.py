@@ -86,7 +86,7 @@ class Simulator:
         self.scheduler = self._create_scheduler(scheduler_type, layer_strategy)
         if hasattr(self.scheduler, "device_types"):
             setattr(self.scheduler, "device_types", self.device_types)
-        self.lyapunov = LyapunovQueue(num_uav=num_uav, theta=lyapunov_theta)
+        self.lyapunov = LyapunovQueue(num_uav=num_uav, theta=lyapunov_theta, q_max=10.0, arrival_clip=5.0)
         self.rl_param = RLSchedulerParam()
         self.state_collector = StateCollector()
         self.metrics = MetricsLogger()
@@ -207,9 +207,26 @@ class Simulator:
             fairness = jain_fairness(loads)
             if self.use_lyapunov and self.lyapunov_mode != "none":
                 arrivals = [0.0 for _ in range(self.num_uav)]
+                service = [max(c, 1e-6) for c in compute]
                 for blk, dev in assignment.items():
-                    arrivals[dev] += demands[blk].compute
-                lyapunov = self.lyapunov.update_from_arrival_service(arrivals, compute)
+                    arrivals[dev] += demands[blk].compute / service[dev]
+                norm_service = [1.0 for _ in range(self.num_uav)]
+                lyapunov = self.lyapunov.update_from_arrival_service(arrivals, norm_service)
+                if t % 10 == 0:
+                    logger.info(
+                        "queue_stats t=%s arrivals(min/mean/max)=%.3f/%.3f/%.3f "
+                        "service(min/mean/max)=%.3f/%.3f/%.3f Q(min/mean/max)=%.3f/%.3f/%.3f",
+                        t,
+                        min(arrivals),
+                        sum(arrivals) / max(len(arrivals), 1),
+                        max(arrivals),
+                        min(norm_service),
+                        sum(norm_service) / max(len(norm_service), 1),
+                        max(norm_service),
+                        min(lyapunov),
+                        sum(lyapunov) / max(len(lyapunov), 1),
+                        max(lyapunov),
+                    )
             else:
                 lyapunov = [0.0 for _ in range(self.num_uav)]
 

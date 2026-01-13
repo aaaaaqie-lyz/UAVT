@@ -137,7 +137,8 @@ class MultiAgentResourceAllocationEnv:
         self.max_load_weight_base = 0.4
         self.imbalance_threshold = 0.7
         self.queue_decay = 0.02
-        self.queue_cap = 5.0
+        self.queue_cap = 10.0
+        self.arrival_clip = 5.0
         # Penalise non-UAV targets more aggressively so bids must offset the
         # stronger edge/cloud capacity and keep a UAV-first bias.
         self.type_penalty = type_penalty
@@ -293,6 +294,25 @@ class MultiAgentResourceAllocationEnv:
                 return False
         return True
 
+    def _violation_reasons(self, block: Block, dev: int) -> List[str]:
+        reasons: List[str] = []
+        demand = self.demands[block]
+        comp_future = self.comp_used[dev] + demand.compute
+        mem_future = self.mem_used[dev] + demand.memory
+        if comp_future / max(self.compute[dev], 1e-6) > self.load_guard:
+            reasons.append("comp_exceed")
+        if mem_future / max(self.memory[dev], 1e-6) > self.load_guard:
+            reasons.append("mem_exceed")
+        if not self._queue_allows(dev, strict=True):
+            reasons.append("queue_blocked")
+        prev_dev = self.prev_assignment.get(block)
+        prev_feasible = self._feasible(block, prev_dev)[0] if prev_dev is not None else False
+        if not self._cooldown_allows(block, dev, prev_feasible, prev_dev):
+            reasons.append("cooldown_lock")
+        if not self._link_reachable(block, dev):
+            reasons.append("unreachable")
+        return reasons
+
     def _queue_allows(self, dev: int, strict: bool = True) -> bool:
         if self.queue_block_threshold is None:
             return True
@@ -323,12 +343,14 @@ class MultiAgentResourceAllocationEnv:
         return kv / rate + self.migration_overhead
 
     def _update_queue(self, dev: int, arrival: float, service: float) -> None:
+        arrival = min(max(arrival, 0.0), self.arrival_clip)
         new_q = max(self.queue[dev] - service, 0.0) + arrival
         new_q = new_q - self.queue_decay
         self.queue[dev] = max(min(new_q, self.queue_cap), 0.0)
         self.lyapunov[dev] = self.queue[dev]
 
     def _update_comm_queue(self, dev: int, arrival: float, service: float) -> None:
+        arrival = min(max(arrival, 0.0), self.arrival_clip)
         new_q = max(self.comm_queue[dev] - service, 0.0) + arrival
         new_q = new_q - self.queue_decay
         self.comm_queue[dev] = max(min(new_q, self.queue_cap), 0.0)
@@ -369,8 +391,6 @@ class MultiAgentResourceAllocationEnv:
         for dev in range(self.num_agents):
             feasible, base_score = self._feasible(block, dev)
             if not feasible:
-                continue
-            if not self._link_reachable(block, dev):
                 continue
             if not self._cooldown_allows(block, dev, prev_feasible, prev_dev):
                 continue
@@ -444,9 +464,8 @@ class MultiAgentResourceAllocationEnv:
                 self.mem_used[device] / (self.memory[device] + 1e-6),
             )
             improvement = max(prev_load - load_ratio, 0.0)
-            self._update_queue(device, demand.compute, self.compute[device])
-            comm_service = max(self._avg_bw_per_dev[device], 1e-6)
-            self._update_comm_queue(device, comm_delay, comm_service)
+            self._update_queue(device, demand.compute / max(self.compute[device], 1e-6), 1.0)
+            self._update_comm_queue(device, comm_delay / max(self.comm_norm, 1e-6), 1.0)
             queue_penalty = max(self.queue[device] / max(self.queue_cap, 1.0) - self.queue_threshold, 0.0)
             queue_drift = max(self.queue[device] - prev_queue, 0.0)
             stick_bonus = 0.0
@@ -662,9 +681,6 @@ class MultiAgentResourceAllocationEnv:
                 mask.append(False)
                 continue
             if not feasible:
-                mask.append(False)
-                continue
-            if not self._link_reachable(block, dev):
                 mask.append(False)
                 continue
             if not self._cooldown_allows(block, dev, prev_feasible, prev_dev):

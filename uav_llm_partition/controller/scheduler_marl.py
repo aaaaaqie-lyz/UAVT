@@ -169,6 +169,11 @@ class MARLScheduler:
                 [f"{q:.2f}" for q in env.queue],
                 {blk.identifier(): env.retry_counts.get(blk, 0) for blk in env.failed_blocks},
             )
+            for blk in env.failed_blocks:
+                reasons = {
+                    dev: env._violation_reasons(blk, dev) for dev in range(len(compute))  # type: ignore[attr-defined]
+                }
+                logger.info("MARL infeasible block=%s violations=%s", blk.identifier(), reasons)
         migrations: List[Tuple[Block, int, int]] = []
         for blk, dev in assignment.items():
             if blk in prev_assignment and prev_assignment[blk] != dev:
