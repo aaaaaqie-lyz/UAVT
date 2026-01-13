@@ -253,6 +253,11 @@ class MultiAgentResourceAllocationEnv:
                 return False
         return True
 
+    def _queue_allows(self, dev: int, strict: bool = True) -> bool:
+        if not strict or self.queue_block_threshold is None:
+            return True
+        return self.queue[dev] <= self.queue_block_threshold
+
     def _cut_metrics(self, block: Block, dev: int) -> Tuple[int, float]:
         cut_cnt = 0
         cut_bytes = 0.0
@@ -288,6 +293,14 @@ class MultiAgentResourceAllocationEnv:
         return min(max(value / scale, 0.0), 1.0)
 
     def _choose_device(self, block: Block, bids: Sequence[float]) -> Tuple[Optional[int], Dict[int, float]]:
+        return self._choose_device_with_queue(block, bids, strict_queue=True)
+
+    def _choose_device_with_queue(
+        self,
+        block: Block,
+        bids: Sequence[float],
+        strict_queue: bool,
+    ) -> Tuple[Optional[int], Dict[int, float]]:
         scores: Dict[int, float] = {}
         prev_dev = self.prev_assignment.get(block)
         prev_score = None
@@ -304,7 +317,7 @@ class MultiAgentResourceAllocationEnv:
                 continue
             if not self._link_reachable(block, dev):
                 continue
-            if self.queue_block_threshold is not None and self.queue[dev] > self.queue_block_threshold:
+            if not self._queue_allows(dev, strict=strict_queue):
                 continue
             if self.device_types[dev] != "cloud":
                 non_cloud_feasible = True
@@ -329,6 +342,8 @@ class MultiAgentResourceAllocationEnv:
             if prev_dev is not None and dev == prev_dev:
                 prev_score = score - self.stability_margin  # make previous slightly more attractive
         if not scores:
+            if strict_queue and self.queue_block_threshold is not None:
+                return self._choose_device_with_queue(block, bids, strict_queue=False)
             return None, scores
         best_dev = min(scores, key=scores.get)
         # Sticky preference: keep previous assignment if comparable
@@ -533,6 +548,9 @@ class MultiAgentResourceAllocationEnv:
         if self.block_idx >= len(self.blocks):
             return [False for _ in range(self.num_agents)]
         block = self.blocks[self.block_idx]
+        return self._action_mask_with_queue(block, strict_queue=True)
+
+    def _action_mask_with_queue(self, block: Block, strict_queue: bool) -> List[bool]:
         demand = self.demands[block]
         cloud_blocks = sum(1 for _, dev in self.assignment.items() if self.device_types[dev] == "cloud")
         cloud_volume = sum(
@@ -549,7 +567,7 @@ class MultiAgentResourceAllocationEnv:
                 non_cloud_feasible = True
             prelim.append((base_score, feasible))
         for dev, (_, feasible) in enumerate(prelim):
-            if self.queue_block_threshold is not None and self.queue[dev] > self.queue_block_threshold:
+            if not self._queue_allows(dev, strict=strict_queue):
                 mask.append(False)
                 continue
             if not feasible:
@@ -569,4 +587,6 @@ class MultiAgentResourceAllocationEnv:
                     mask.append(False)
                     continue
             mask.append(True)
+        if strict_queue and not any(mask) and self.queue_block_threshold is not None:
+            return self._action_mask_with_queue(block, strict_queue=False)
         return mask
