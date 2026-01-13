@@ -93,6 +93,7 @@ class MultiAgentResourceAllocationEnv:
         self.migration_hold_steps = migration_hold_steps
         self.cooldowns = dict(cooldowns) if cooldowns is not None else {}
         self.max_retries = 2
+        self.num_agents = len(self.compute)
 
         # Expected dimensions (base features + block features)
         self.type_ids = [self._encode_type(t) for t in self.device_types]
@@ -141,7 +142,6 @@ class MultiAgentResourceAllocationEnv:
         # stronger edge/cloud capacity and keep a UAV-first bias.
         self.type_penalty = type_penalty
 
-        self.num_agents = len(self.compute)
         self._max_compute = max(self.compute) if self.compute else 1.0
         self._max_memory = max(self.memory) if self.memory else 1.0
         self._avg_compute = sum(self.compute) / max(self.num_agents, 1)
