@@ -52,7 +52,9 @@ class MultiAgentResourceAllocationEnv:
         migration_overhead: float = 0.01,
         lyapunov_theta: float = 0.3,
         device_types: Sequence[str] | None = None,
+        rho_w: float = 0.0,
         rho_q: float = 0.0,
+        queue_block_threshold: float | None = 0.9,
         cloud_block_budget: int | None = 1,
         cloud_volume_budget: float | None = 0.5,
         cloud_fallback_only: bool = True,
@@ -73,7 +75,9 @@ class MultiAgentResourceAllocationEnv:
         self.migration_overhead = migration_overhead
         self.lyapunov_theta = lyapunov_theta
         self.device_types = list(device_types) if device_types is not None else ["uav" for _ in compute]
+        self.rho_w = rho_w
         self.rho_q = rho_q
+        self.queue_block_threshold = queue_block_threshold
         self.cloud_block_budget = cloud_block_budget
         self.cloud_volume_budget = cloud_volume_budget
         self.cloud_fallback_only = cloud_fallback_only
@@ -90,6 +94,7 @@ class MultiAgentResourceAllocationEnv:
         self.bid_weight = 2.0
         self.stability_bonus = stability_bonus
         self.stability_margin = stability_margin
+        self.balance_weight = 0.4
         self.queue_threshold = 0.6
         self.delay_norm = 1.0
         self.comm_norm = 1.0
@@ -104,7 +109,7 @@ class MultiAgentResourceAllocationEnv:
         self.queue_weight = 0.3
         self.queue_drift_weight = 0.2
         self.max_queue_weight = 0.4
-        self.failure_penalty = 2.0
+        self.failure_penalty = 10.0
         self.team_mix = 0.3
         self.team_mix_base = 0.3
         self.max_load_weight_base = 0.4
@@ -125,7 +130,7 @@ class MultiAgentResourceAllocationEnv:
         self._max_kv = max((d.kv_cache for d in self.demands.values()), default=1.0)
         self.max_layer = max((blk.layer for blk in self.blocks), default=0) + 1
         self.queue = [0.0 for _ in range(self.num_agents)]
-        self.global_state_dim = 6 * self.num_agents + 7
+        self.global_state_dim = 6 * self.num_agents + 8
         self.reset()
 
     def _encode_type(self, dev_type: str) -> float:
@@ -236,6 +241,18 @@ class MultiAgentResourceAllocationEnv:
                     comm_ratio += size / (self.bandwidth[src][dev] + 1e-6) + self.latency[src][dev]
         return comm_ratio
 
+    def _link_reachable(self, block: Block, dev: int) -> bool:
+        for up, down in self.dependencies:
+            if block not in (up, down):
+                continue
+            neighbor = down if block == up else up
+            neighbor_dev = self.assignment.get(neighbor, self.prev_assignment.get(neighbor))
+            if neighbor_dev is None or neighbor_dev == dev:
+                continue
+            if self.bandwidth[dev][neighbor_dev] <= 0.0:
+                return False
+        return True
+
     def _cut_metrics(self, block: Block, dev: int) -> Tuple[int, float]:
         cut_cnt = 0
         cut_bytes = 0.0
@@ -284,6 +301,10 @@ class MultiAgentResourceAllocationEnv:
         for dev in range(self.num_agents):
             feasible, base_score = self._feasible(block, dev)
             if not feasible:
+                continue
+            if not self._link_reachable(block, dev):
+                continue
+            if self.queue_block_threshold is not None and self.queue[dev] > self.queue_block_threshold:
                 continue
             if self.device_types[dev] != "cloud":
                 non_cloud_feasible = True
@@ -366,8 +387,8 @@ class MultiAgentResourceAllocationEnv:
             device_reward -= self.comp_penalty_scale * comp_term
             device_reward -= self.migration_penalty_scale * mig_term
             device_reward -= self.comm_reward_weight * comm_term
-            device_reward -= self.queue_weight * min(queue_penalty, 1.0)
-            device_reward -= self.queue_drift_weight * min(queue_drift / max(self.queue_cap, 1.0), 1.0)
+            device_reward -= self.rho_q * self.queue_weight * min(queue_penalty, 1.0)
+            device_reward -= self.rho_q * self.queue_drift_weight * min(queue_drift / max(self.queue_cap, 1.0), 1.0)
             device_reward -= self.type_penalty.get(self.device_types[device], 0.0)
             device_reward += 0.5 * improvement
             device_reward += stick_bonus
@@ -388,6 +409,8 @@ class MultiAgentResourceAllocationEnv:
             max_load = max(loads) if loads else 0.0
             min_load = min(loads) if loads else 0.0
             imbalance = max_load - min_load
+            load_mean = sum(loads) / max(len(loads), 1)
+            load_variance = sum((load - load_mean) ** 2 for load in loads) / max(len(loads), 1)
             if imbalance > self.imbalance_threshold:
                 self.team_mix = 0.5
                 self.max_load_weight = 0.8
@@ -397,8 +420,9 @@ class MultiAgentResourceAllocationEnv:
             fairness_bonus = 0.1 * (1.0 - max_load) if loads else 0.0
             team_reward = sum(rewards) / max(self.num_agents, 1)
             max_load_hinge = max(max_load - self.max_load_hinge, 0.0)
-            team_reward -= self.max_load_weight * (max_load_hinge * max_load_hinge)
+            team_reward -= self.rho_w * self.max_load_weight * (max_load_hinge * max_load_hinge)
             team_reward += fairness_bonus
+            team_reward -= self.balance_weight * load_variance
             if self.dependencies:
                 team_reward -= self.cut_penalty_weight * (cut_edges / len(self.dependencies))
             team_reward -= self.comm_reward_weight * self._norm(comm_delay, self.comm_norm)
@@ -410,7 +434,8 @@ class MultiAgentResourceAllocationEnv:
                     cut_bytes - self.cut_bytes_limit, self.comm_norm
                 )
             max_queue = max(self.queue) if self.queue else 0.0
-            team_reward -= self.max_queue_weight * min(max_queue / max(self.queue_cap, 1.0), 1.0)
+            team_reward -= self.rho_q * self.max_queue_weight * min(max_queue / max(self.queue_cap, 1.0), 1.0)
+            team_reward -= self.rho_q * self.queue_drift_weight * min(queue_drift / max(self.queue_cap, 1.0), 1.0)
             mig_gain = 0.0
             if block in self.prev_assignment and self.prev_assignment[block] != device:
                 mig_gain = max(prev_max_load - max_load, 0.0) + max(prev_max_q - max_queue, 0.0)
@@ -422,12 +447,14 @@ class MultiAgentResourceAllocationEnv:
             team_reward = -self.failure_penalty
             rewards = [team_reward for _ in range(self.num_agents)]
         if failed:
-            team_reward = rewards[0] if rewards else -0.5
+            team_reward = rewards[0] if rewards else -self.failure_penalty
         rewards = [((1.0 - self.team_mix) * r + self.team_mix * team_reward) for r in rewards]
         rewards = [max(min(r, 1.0), -1.0) for r in rewards]
 
         self.block_idx += 1
-        done = self.block_idx >= len(self.blocks)
+        done = failed or self.block_idx >= len(self.blocks)
+        if failed:
+            self.block_idx = len(self.blocks)
         next_local = None if done else self._get_local_states()
         next_global = None if done else self._get_global_state()
         return EnvStep(next_local, next_global, rewards, team_reward, done, (block, device) if not failed else None)
@@ -497,6 +524,7 @@ class MultiAgentResourceAllocationEnv:
         mean_q = sum(self.queue) / max(len(self.queue), 1)
         state.append(min(mean_q / self.queue_cap, 1.0))
         state.append(self.rho_q)
+        state.append(self.rho_w)
         expected = self.global_state_dim
         assert len(state) == expected, f"global state dim mismatch {len(state)} != {expected}"
         return state
@@ -505,8 +533,40 @@ class MultiAgentResourceAllocationEnv:
         if self.block_idx >= len(self.blocks):
             return [False for _ in range(self.num_agents)]
         block = self.blocks[self.block_idx]
+        demand = self.demands[block]
+        cloud_blocks = sum(1 for _, dev in self.assignment.items() if self.device_types[dev] == "cloud")
+        cloud_volume = sum(
+            self.demands[blk].memory
+            for blk, dev in self.assignment.items()
+            if self.device_types[dev] == "cloud"
+        )
         mask: List[bool] = []
+        non_cloud_feasible = False
+        prelim: List[Tuple[float, bool]] = []
         for dev in range(self.num_agents):
-            feasible, _ = self._feasible(block, dev)
-            mask.append(feasible)
+            feasible, base_score = self._feasible(block, dev)
+            if feasible and self.device_types[dev] != "cloud":
+                non_cloud_feasible = True
+            prelim.append((base_score, feasible))
+        for dev, (_, feasible) in enumerate(prelim):
+            if self.queue_block_threshold is not None and self.queue[dev] > self.queue_block_threshold:
+                mask.append(False)
+                continue
+            if not feasible:
+                mask.append(False)
+                continue
+            if not self._link_reachable(block, dev):
+                mask.append(False)
+                continue
+            if self.device_types[dev] == "cloud":
+                if self.cloud_fallback_only and non_cloud_feasible:
+                    mask.append(False)
+                    continue
+                if self.cloud_block_budget is not None and cloud_blocks >= self.cloud_block_budget:
+                    mask.append(False)
+                    continue
+                if self.cloud_volume_budget is not None and cloud_volume + demand.memory > self.cloud_volume_budget:
+                    mask.append(False)
+                    continue
+            mask.append(True)
         return mask

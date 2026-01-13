@@ -142,6 +142,7 @@ class Simulator:
                 self.scheduler.lyapunov_penalty = max(self.lyapunov_penalty_value, self.scheduler.lyapunov_penalty)
                 self.scheduler.queue_block_threshold = 0.9
         if isinstance(self.scheduler, MARLScheduler):
+            self.scheduler.rho_w = rl_params.rho_w
             self.scheduler.rho_q = rl_params.rho_q
 
         for t in range(self.intervals):
@@ -240,8 +241,8 @@ class Simulator:
                 loads=loads,
                 queues=lyapunov,
                 weights=weights,
-                rho_w=getattr(self.scheduler, "weight_scale", 0.0),
-                rho_q=getattr(self.scheduler, "lyapunov_penalty", 0.0),
+                rho_w=getattr(self.scheduler, "rho_w", getattr(self.scheduler, "weight_scale", 0.0)),
+                rho_q=getattr(self.scheduler, "rho_q", getattr(self.scheduler, "lyapunov_penalty", 0.0)),
             )
             self.metrics.log(metrics)
             self.prev_assignment = assignment

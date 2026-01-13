@@ -17,6 +17,7 @@ class MARLScheduler:
         self.agent: MAPPOAgent | None = None
         self.model_path = model_path
         self.mig_overhead = mig_overhead
+        self.rho_w = 0.0
         self.rho_q = 0.0
 
     def _ensure_agent(self, num_agents: int, local_state_dim: int, global_state_dim: int) -> None:
@@ -109,6 +110,7 @@ class MARLScheduler:
             prev_assignment=prev_assignment,
             migration_overhead=self.mig_overhead,
             device_types=resolved_types,
+            rho_w=self.rho_w,
             rho_q=self.rho_q,
         )
         local_states, global_state = env.reset()
@@ -126,6 +128,8 @@ class MARLScheduler:
 
         while env.block_idx < len(env.blocks):
             bids, _, _, _ = self.agent.select_bids(local_states, deterministic=True)
+            mask = env.action_mask()
+            bids = [bid if ok else 0.0 for bid, ok in zip(bids, mask)]
             if resolved_types:
                 scaled = []
                 for bid, dev_type in zip(bids, resolved_types):
