@@ -106,7 +106,7 @@ class MultiAgentResourceAllocationEnv:
         ]
         self._max_snr = max(self.snr) if self.snr else 1.0
         self._max_rssi = max(self.rssi) if self.rssi else 1.0
-        self.local_state_dim = 25
+        self.local_state_dim = 26
 
         # Reward/penalty knobs
         self.migration_penalty_scale = migration_penalty_scale
