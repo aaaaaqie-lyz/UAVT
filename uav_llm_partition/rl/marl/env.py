@@ -154,7 +154,7 @@ class MultiAgentResourceAllocationEnv:
         self.comm_queue = [0.0 for _ in range(self.num_agents)]
         self.failed_blocks: List[Block] = []
         self.retry_counts: Dict[Block, int] = {}
-        self.global_state_dim = 6 * self.num_agents + 14
+        self.global_state_dim = 7 * self.num_agents + 14
         self.reset()
 
     def _encode_type(self, dev_type: str) -> float:
