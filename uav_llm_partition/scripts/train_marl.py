@@ -42,7 +42,7 @@ def main() -> None:
             device_types=device_types,
         )
         sim_positions, sim_mob = sim.mobility.update()
-        bandwidth, conn, los_score, latency = sim.channel.compute(sim_positions, sim.device_types)
+        bandwidth, conn, los_score, latency, snr, rssi = sim.channel.compute(sim_positions, sim.device_types)
         compute, memory = sim.resource.sample(sim.device_types)
         demands = sim.demand_model.update_interval()
         activation_sizes = {(u, v): sim.demand_model.activation_size(u, v) for u, v in sim.dependencies}
@@ -75,7 +75,11 @@ def main() -> None:
                 prev_assignment={},
                 migration_overhead=scheduler.mig_overhead,
                 device_types=sim.device_types,
+                snr=[0.0 for _ in range(sim.num_uav)],
+                rssi=[0.0 for _ in range(sim.num_uav)],
+                rho_w=0.0,
                 rho_q=0.0,
+                dpp_v=1.0,
             )
 
         env_sample = _make_env()
