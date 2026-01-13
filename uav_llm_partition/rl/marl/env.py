@@ -82,6 +82,7 @@ class MultiAgentResourceAllocationEnv:
         self.cloud_volume_budget = cloud_volume_budget
         self.cloud_fallback_only = cloud_fallback_only
         self.cloud_bias = cloud_bias
+        self.max_retries = 2
 
         # Expected dimensions (base features + block features)
         self.type_ids = [self._encode_type(t) for t in self.device_types]
@@ -130,7 +131,9 @@ class MultiAgentResourceAllocationEnv:
         self._max_kv = max((d.kv_cache for d in self.demands.values()), default=1.0)
         self.max_layer = max((blk.layer for blk in self.blocks), default=0) + 1
         self.queue = [0.0 for _ in range(self.num_agents)]
-        self.global_state_dim = 6 * self.num_agents + 8
+        self.failed_blocks: List[Block] = []
+        self.retry_counts: Dict[Block, int] = {}
+        self.global_state_dim = 6 * self.num_agents + 10
         self.reset()
 
     def _encode_type(self, dev_type: str) -> float:
@@ -146,6 +149,8 @@ class MultiAgentResourceAllocationEnv:
         self.queue = [max(min(q, self.queue_cap), 0.0) for q in self.lyapunov]
         self._avg_compute = sum(self.compute) / max(self.num_agents, 1)
         self._avg_memory = sum(self.memory) / max(self.num_agents, 1)
+        self.failed_blocks = []
+        self.retry_counts = {}
         return self._get_local_states(), self._get_global_state()
 
     def retain_feasible_prev(self) -> Tuple[Dict[Block, int], List[float], List[float], List[Block]]:
@@ -254,9 +259,10 @@ class MultiAgentResourceAllocationEnv:
         return True
 
     def _queue_allows(self, dev: int, strict: bool = True) -> bool:
-        if not strict or self.queue_block_threshold is None:
+        if self.queue_block_threshold is None:
             return True
-        return self.queue[dev] <= self.queue_block_threshold
+        threshold = self.queue_block_threshold if strict else self.queue_block_threshold * 1.5
+        return self.queue[dev] <= threshold
 
     def _cut_metrics(self, block: Block, dev: int) -> Tuple[int, float]:
         cut_cnt = 0
@@ -461,15 +467,18 @@ class MultiAgentResourceAllocationEnv:
             # penalize everyone if no one could take the block
             team_reward = -self.failure_penalty
             rewards = [team_reward for _ in range(self.num_agents)]
+            self.failed_blocks.append(block)
+            retry_count = self.retry_counts.get(block, 0) + 1
+            self.retry_counts[block] = retry_count
+            if retry_count <= self.max_retries:
+                self.blocks.append(block)
         if failed:
             team_reward = rewards[0] if rewards else -self.failure_penalty
         rewards = [((1.0 - self.team_mix) * r + self.team_mix * team_reward) for r in rewards]
         rewards = [max(min(r, 1.0), -1.0) for r in rewards]
 
         self.block_idx += 1
-        done = failed or self.block_idx >= len(self.blocks)
-        if failed:
-            self.block_idx = len(self.blocks)
+        done = self.block_idx >= len(self.blocks)
         next_local = None if done else self._get_local_states()
         next_global = None if done else self._get_global_state()
         return EnvStep(next_local, next_global, rewards, team_reward, done, (block, device) if not failed else None)
@@ -536,8 +545,11 @@ class MultiAgentResourceAllocationEnv:
         state.extend(type_counts)
         state.append(sum(loads) / len(loads) if loads else 0.0)
         state.append(max(loads) if loads else 0.0)
+        state.append(min(loads) if loads else 0.0)
         mean_q = sum(self.queue) / max(len(self.queue), 1)
         state.append(min(mean_q / self.queue_cap, 1.0))
+        max_q = max(self.queue) if self.queue else 0.0
+        state.append(min(max_q / self.queue_cap, 1.0))
         state.append(self.rho_q)
         state.append(self.rho_w)
         expected = self.global_state_dim

@@ -210,14 +210,18 @@ class Simulator:
                 + (0.4 * len(migrations))
                 + (0.2 * mig_volume)
             )
-            if self.lyapunov_mode == "adaptive" and isinstance(self.scheduler, SchedulerHeuristic):
+            if self.lyapunov_mode == "adaptive" and isinstance(self.scheduler, (SchedulerHeuristic, MARLScheduler)):
                 self._reward_buffer.append(rl_reward)
                 if (t + 1) % rl_params.window == 0:
                     window_reward = sum(self._reward_buffer[-rl_params.window :]) / rl_params.window
                     avg_queue = sum(lyapunov) / len(lyapunov) if lyapunov else 0.0
                     rl_params = self.rl_param.update_from_reward(window_reward, avg_queue=avg_queue)
-                    self.scheduler.weight_scale = rl_params.rho_w
-                    self.scheduler.lyapunov_penalty = rl_params.rho_q
+                    if isinstance(self.scheduler, SchedulerHeuristic):
+                        self.scheduler.weight_scale = rl_params.rho_w
+                        self.scheduler.lyapunov_penalty = rl_params.rho_q
+                    else:
+                        self.scheduler.rho_w = rl_params.rho_w
+                        self.scheduler.rho_q = rl_params.rho_q
 
             metrics = IntervalMetrics(
                 max_load=max_load,
