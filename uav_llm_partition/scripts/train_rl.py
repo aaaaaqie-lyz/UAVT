@@ -25,7 +25,7 @@ def _env_factory() -> RLResourceAllocationEnv:
 
     # Single-interval snapshot mirroring the first scheduling step
     positions, mobility_risk = sim.mobility.update()
-    bandwidth, conn, los_score, latency = sim.channel.compute(
+    bandwidth, conn, los_score, latency, snr, rssi = sim.channel.compute(
         positions, getattr(sim, "device_types", ["uav"] * sim.num_uav)
     )
     compute, memory = sim.resource.sample(getattr(sim, "device_types", ["uav"] * sim.num_uav))
