@@ -30,6 +30,7 @@ class SchedulerHeuristic:
         migration_budget: int = 8,
         migration_volume_budget: float = 0.5,
         migration_improve_margin: float = 0.05,
+        migration_hold_steps: int = 3,
         load_guard: float = 0.9,
         load_balance_bias: float = 0.15,
         preventive_threshold: float = 0.85,
@@ -52,6 +53,7 @@ class SchedulerHeuristic:
         self.migration_budget = migration_budget
         self.migration_volume_budget = migration_volume_budget
         self.migration_improve_margin = migration_improve_margin
+        self.migration_hold_steps = migration_hold_steps
         self.load_guard = load_guard
         self.load_balance_bias = load_balance_bias
         self.preventive_threshold = preventive_threshold
@@ -65,6 +67,7 @@ class SchedulerHeuristic:
         self.cloud_fallback_only = cloud_fallback_only
         self.cloud_bias = cloud_bias
         self.load_priority_weight = load_priority_weight
+        self._cooldowns: Dict[Block, int] = {}
 
     def _ratios(
         self,
@@ -272,6 +275,10 @@ class SchedulerHeuristic:
         migration_volume = 0.0
         failed = False
         failure_reason = ""
+        for blk in list(self._cooldowns.keys()):
+            self._cooldowns[blk] -= 1
+            if self._cooldowns[blk] <= 0:
+                del self._cooldowns[blk]
 
         kept, comp_used, mem_used, pending_blocks = self._retain_feasible_prev(
             blocks,
@@ -304,6 +311,26 @@ class SchedulerHeuristic:
             candidate_scores: List[Tuple[int, float, float, bool, bool, float, float, float, float, float]] = []
             cloud_budget_ok: Dict[int, bool] = {}
             non_cloud_feasible = False
+            cooldown_active = self._cooldowns.get(blk, 0) > 0
+            prev_dev = prev_assignment.get(blk)
+            prev_feasible = False
+            if cooldown_active and prev_dev is not None and prev_dev < len(compute):
+                comp_ratio, mem_ratio, comm_ratio = self._ratios(
+                    blk,
+                    demand,
+                    prev_dev,
+                    compute,
+                    memory,
+                    assignment,
+                    prev_assignment,
+                    dependencies,
+                    activation_sizes,
+                    bandwidth,
+                    latency,
+                    comp_used,
+                    mem_used,
+                )
+                prev_feasible = max(comp_ratio, mem_ratio, comm_ratio) <= self.load_guard
             current_loads = [
                 max(
                     comp_used[i] / max(compute[i], 1e-6),
@@ -362,6 +389,8 @@ class SchedulerHeuristic:
                     and (not will_migrate or len(migrations) < self.migration_budget)
                     and (not will_migrate or migration_volume + mig_volume <= self.migration_volume_budget)
                 )
+                if cooldown_active and prev_dev is not None and prev_feasible and dev != prev_dev:
+                    feasible = False
                 imbalance = max(
                     max(comp_used) / max(max(compute), 1e-6),
                     max(mem_used) / max(max(memory), 1e-6),
@@ -491,6 +520,8 @@ class SchedulerHeuristic:
             if blk in prev_assignment and prev_assignment[blk] != dev and will_migrate:
                 migrations.append((blk, prev_assignment[blk], dev))
                 migration_volume += mig_volume
+                if self.migration_hold_steps > 0:
+                    self._cooldowns[blk] = self.migration_hold_steps
             chosen_dev_type = device_types_local[dev] if dev < len(device_types_local) else "uav"
             if chosen_dev_type == "cloud":
                 cloud_blocks += 1

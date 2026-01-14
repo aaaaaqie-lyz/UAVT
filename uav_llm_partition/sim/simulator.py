@@ -43,6 +43,7 @@ class Simulator:
         intervals: int = 50,
         interval_tokens: int = 16,
         initial_seq_len: int = 128,
+        kv_window_tokens: int | None = None,
         use_lyapunov: bool = True,
         lyapunov_mode: str = "adaptive",
         lyapunov_penalty_value: float = 0.5,
@@ -72,6 +73,7 @@ class Simulator:
             head_dim=head_dim,
             interval_tokens=interval_tokens,
             initial_seq_len=initial_seq_len,
+            kv_window_tokens=kv_window_tokens,
         )
         self.use_lyapunov = use_lyapunov
         self.lyapunov_mode = lyapunov_mode
@@ -142,6 +144,7 @@ class Simulator:
                 self.scheduler.lyapunov_penalty = max(self.lyapunov_penalty_value, self.scheduler.lyapunov_penalty)
                 self.scheduler.queue_block_threshold = 0.9
         if isinstance(self.scheduler, MARLScheduler):
+            self.scheduler.rho_w = rl_params.rho_w
             self.scheduler.rho_q = rl_params.rho_q
 
         for t in range(self.intervals):
@@ -198,7 +201,10 @@ class Simulator:
             max_load = max(loads)
             fairness = jain_fairness(loads)
             if self.use_lyapunov and self.lyapunov_mode != "none":
-                lyapunov = self.lyapunov.update(loads)
+                arrivals = [0.0 for _ in range(self.num_uav)]
+                for blk, dev in assignment.items():
+                    arrivals[dev] += demands[blk].compute
+                lyapunov = self.lyapunov.update_from_arrival_service(arrivals, compute)
             else:
                 lyapunov = [0.0 for _ in range(self.num_uav)]
 
@@ -209,14 +215,18 @@ class Simulator:
                 + (0.4 * len(migrations))
                 + (0.2 * mig_volume)
             )
-            if self.lyapunov_mode == "adaptive" and isinstance(self.scheduler, SchedulerHeuristic):
+            if self.lyapunov_mode == "adaptive" and isinstance(self.scheduler, (SchedulerHeuristic, MARLScheduler)):
                 self._reward_buffer.append(rl_reward)
                 if (t + 1) % rl_params.window == 0:
                     window_reward = sum(self._reward_buffer[-rl_params.window :]) / rl_params.window
                     avg_queue = sum(lyapunov) / len(lyapunov) if lyapunov else 0.0
                     rl_params = self.rl_param.update_from_reward(window_reward, avg_queue=avg_queue)
-                    self.scheduler.weight_scale = rl_params.rho_w
-                    self.scheduler.lyapunov_penalty = rl_params.rho_q
+                    if isinstance(self.scheduler, SchedulerHeuristic):
+                        self.scheduler.weight_scale = rl_params.rho_w
+                        self.scheduler.lyapunov_penalty = rl_params.rho_q
+                    else:
+                        self.scheduler.rho_w = rl_params.rho_w
+                        self.scheduler.rho_q = rl_params.rho_q
 
             metrics = IntervalMetrics(
                 max_load=max_load,
@@ -240,8 +250,8 @@ class Simulator:
                 loads=loads,
                 queues=lyapunov,
                 weights=weights,
-                rho_w=getattr(self.scheduler, "weight_scale", 0.0),
-                rho_q=getattr(self.scheduler, "lyapunov_penalty", 0.0),
+                rho_w=getattr(self.scheduler, "rho_w", getattr(self.scheduler, "weight_scale", 0.0)),
+                rho_q=getattr(self.scheduler, "rho_q", getattr(self.scheduler, "lyapunov_penalty", 0.0)),
             )
             self.metrics.log(metrics)
             self.prev_assignment = assignment
@@ -294,8 +304,8 @@ class Simulator:
                 log_lines.append(f"layers={layer_block}")
             log_lines.append(
                 "rho_w={:.2f} rho_q={:.2f}".format(
-                    getattr(self.scheduler, "weight_scale", 0.0),
-                    getattr(self.scheduler, "lyapunov_penalty", 0.0),
+                    getattr(self.scheduler, "rho_w", getattr(self.scheduler, "weight_scale", 0.0)),
+                    getattr(self.scheduler, "rho_q", getattr(self.scheduler, "lyapunov_penalty", 0.0)),
                 )
             )
             logger.info("\n ".join(log_lines))

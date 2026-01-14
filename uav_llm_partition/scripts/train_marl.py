@@ -75,6 +75,7 @@ def main() -> None:
                 prev_assignment={},
                 migration_overhead=scheduler.mig_overhead,
                 device_types=sim.device_types,
+                rho_w=0.0,
                 rho_q=0.0,
             )
 

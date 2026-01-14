@@ -59,6 +59,7 @@ class DemandModel:
         interval_tokens: int = 4,
         precision_bytes: float = 2.0,
         initial_seq_len: int = 32,
+        kv_window_tokens: Optional[int] = None,
     ) -> None:
         # Build DTIS-style config and transformer
         cfg = TransformerPartitionConfig(
@@ -75,6 +76,7 @@ class DemandModel:
         # Convenience aliases
         self.interval_tokens = interval_tokens
         self.initial_seq_len = initial_seq_len
+        self.kv_window_tokens = kv_window_tokens
 
         # Mapping: Block -> component_id and back
         self._block_to_comp: Dict[Block, str] = {}
@@ -129,7 +131,10 @@ class DemandModel:
         """Number of generated tokens so far (beyond the initial prompt)."""
 
         L = self.transformer.current_sequence_length
-        return max(L - self.initial_seq_len, 0)
+        generated = max(L - self.initial_seq_len, 0)
+        if self.kv_window_tokens is not None:
+            generated = min(generated, self.kv_window_tokens)
+        return generated
 
     def _compute_block_demand(self, block: Block) -> BlockDemand:
         comp = self._component_for_block(block)

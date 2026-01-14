@@ -9,6 +9,7 @@ from uav_llm_partition.rl.marl import MAPPOAgent, MultiAgentResourceAllocationEn
 from uav_llm_partition.sim.logger import logger
 
 from .scheduler_baselines import SchedulerResult
+from .scheduler_heuristic import SchedulerHeuristic
 
 
 class MARLScheduler:
@@ -17,7 +18,9 @@ class MARLScheduler:
         self.agent: MAPPOAgent | None = None
         self.model_path = model_path
         self.mig_overhead = mig_overhead
+        self.rho_w = 0.0
         self.rho_q = 0.0
+        self.fallback_guard = max(load_guard, 1.1)
 
     def _ensure_agent(self, num_agents: int, local_state_dim: int, global_state_dim: int) -> None:
         """Load or create a MAPPO agent with dimension validation and fallbacks."""
@@ -109,6 +112,7 @@ class MARLScheduler:
             prev_assignment=prev_assignment,
             migration_overhead=self.mig_overhead,
             device_types=resolved_types,
+            rho_w=self.rho_w,
             rho_q=self.rho_q,
         )
         local_states, global_state = env.reset()
@@ -126,6 +130,8 @@ class MARLScheduler:
 
         while env.block_idx < len(env.blocks):
             bids, _, _, _ = self.agent.select_bids(local_states, deterministic=True)
+            mask = env.action_mask()
+            bids = [bid if ok else 0.0 for bid, ok in zip(bids, mask)]
             if resolved_types:
                 scaled = []
                 for bid, dev_type in zip(bids, resolved_types):
@@ -143,11 +149,52 @@ class MARLScheduler:
             local_states = step.next_local_states or []
 
         assignment = env.assignment
+        if env.failed_blocks:
+            loads = [
+                max(c / (cap + 1e-6), m / (mem + 1e-6))
+                for c, cap, m, mem in zip(env.comp_used, env.compute, env.mem_used, env.memory)
+            ]
+            logger.info(
+                "MARL failed blocks=%s loads=%s queues=%s retries=%s",
+                [blk.identifier() for blk in env.failed_blocks],
+                [f"{load:.2f}" for load in loads],
+                [f"{q:.2f}" for q in env.queue],
+                {blk.identifier(): env.retry_counts.get(blk, 0) for blk in env.failed_blocks},
+            )
         migrations: List[Tuple[Block, int, int]] = []
         for blk, dev in assignment.items():
             if blk in prev_assignment and prev_assignment[blk] != dev:
                 migrations.append((blk, prev_assignment[blk], dev))
         failed = len(assignment) != len(blocks)
         reason = "marl_no_feasible_device" if failed else None
+        if failed:
+            fallback = SchedulerHeuristic(
+                load_guard=self.fallback_guard,
+                queue_block_threshold=None,
+                cloud_fallback_only=False,
+            )
+            fallback_assignment, fallback_migrations, fallback_failed, fallback_reason = fallback.assign(
+                list(blocks),
+                demands,
+                list(compute),
+                list(memory),
+                list(weights),
+                lyapunov=list(lyapunov),
+                prev_assignment=assignment,
+                dependencies=list(dependencies),
+                activation_sizes=activation_sizes,
+                bandwidth=[list(row) for row in bandwidth],
+                latency=[list(row) for row in latency],
+                device_types=resolved_types,
+            )
+            if not fallback_failed:
+                assignment = fallback_assignment
+                for mig in fallback_migrations:
+                    if mig not in migrations:
+                        migrations.append(mig)
+                failed = False
+                reason = "marl_fallback_heuristic"
+            else:
+                reason = fallback_reason or reason
         logger.debug("MARL assignment complete failed=%s reason=%s", failed, reason)
         return SchedulerResult(assignment=assignment, migrations=migrations, failed=failed, reason=reason)
